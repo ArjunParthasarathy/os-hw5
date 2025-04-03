@@ -14,12 +14,13 @@ unsigned long long fib(unsigned long long n)
 
 int main(int argc, char **argv)
 {
-	struct sched_param params = {0};
+	struct sched_param params = {1};
 	int ret;
 	unsigned long long n;
 
-	ret = sched_setscheduler(0, 7, &params);
+	ret = sched_setscheduler(0, SCHED_RR, &params);
 	if (ret) {
+		perror("Error\n");
 		fprintf(stderr, "Freezer scheduling policy does not exist\n");
 		exit(1);
 	}
