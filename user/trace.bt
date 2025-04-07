@@ -2,11 +2,8 @@
 /*
  * OS Team 15 - Sauce.
  * Referenced from the following source:
- 
- * Copyright 2018 Netflix, Inc.
- * Licensed under the Apache License, Version 2.0 (the "License")
+ * https://github.com/bpftrace/bpftrace/blob/aa041d9d85f9ec11235c39fdcb5833412ec27083/tools/runqlat.bt
  *
- * 17-Sep-2018	Brendan Gregg	Created this.
  */
 
 #ifndef BPFTRACE_HAVE_BTF
@@ -15,37 +12,73 @@
 /*
  * With BTF providing types, full headers are not needed.
  * We only need to supply the preprocessor defines used in this script.
- * TASK_RUNNING is not arch-dependant and has not changed in the linux
+ * TASK_RUNNING is not arch-dependent and has not changed in the linux
  * git history (it is not part of the stable API though)
  */
 #define TASK_RUNNING 0
 #endif
 
+#include <stdio.h>
+#include <stdlib.h>
+
 BEGIN
 {
-	printf("Tracing CPU scheduler... Hit Ctrl-C to end.\n");
+	printf("COMM,PID,RUNQ_MS,TOTAL_MS\n");
 }
 
-tracepoint:sched:sched_wakeup,
+/* First time a task is woken up*/
 tracepoint:sched:sched_wakeup_new
 {
-	@qtime[args.pid] = nsecs;
+	// Start time of the process
+	@stime[args.pid] = nsecs;
+	// Cumulatively how much time proc has spent on runqueue
+	@qtime[args.pid];
+	// When we first wake a task, it goes on rq for first time
+	@rqtime[args.pid] = nsecs;
+}
+
+/* subsequent wakeups of a task (if they're on waitqueue) */
+tracepoint:sched:sched_wakeup
+{
+	// If we were put onto runqueue
+	@rqtime[args.pid] = nsecs;
 }
 
 tracepoint:sched:sched_switch
 {
+	// when kicked off CPU, if we get sent to runqueue instead of waitqueue (ex. preemption)
+	// otherwise sched_wakeup above will handle if we get sent to waitqueue
+	// (and later woken up to be added back to runqueue)
 	if (args.prev_state == TASK_RUNNING) {
-		@qtime[args.prev_pid] = nsecs;
+		@rqtime[args.prev_pid] = nsecs;
 	}
-
-	$ns = @qtime[args.next_pid];
-	if ($ns) {
-		@usecs = hist((nsecs - $ns) / 1000);
-	}
-	delete(@qtime[args.next_pid]);
+	// This increments the total time spent on the runqueue with the amount of time this process
+	// was just on runqueue (now that its on CPU its off runqueue)
+	@qtime[args.next_pid] += (nsecs - @rqtime[args.next_pid]);
 }
+
+tracepoint:sched:sched_process_exit
+{
+	// TODO sometimes this value is less than 1 ms (10^6 nanoseconds), so we need to round it
+	// instead of truncating
+	$rq_ms = @qtime[args.pid] / 1000000;
+	$total_ms = (nsecs - @stime[args.pid]) / 1000000;
+	//$total_ms = (nsecs - @stime[args.pid]);
+	// Only look at procs which started after script started
+	if (@stime[args.pid] != 0) {
+		printf("%s,%d,%d,%d\n", args.comm, args.pid, $rq_ms, $total_ms);
+		// In bpftrace language we can compare strings directly
+		// We use the below to compute the fibonacci tasklist avg completion times
+		// if (args.comm == "fibonacci") {
+		// 	printf("%s,%d,%d,%d\n", args.comm, args.pid, $rq_ms, $total_ms);
+		// }
+	}
+}
+/* need to record time of task completion */
 
 END
 {
+	clear(@stime);
 	clear(@qtime);
+	clear(@rqtime);
 }

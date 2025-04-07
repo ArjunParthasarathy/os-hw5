@@ -1,10 +1,12 @@
-This file should contain:
+Arjun Parthasarathy, Kshitig Seth, Veer Prasad
+avp2145, [insert], [insert]
 
--	Your name & UNI (or those of all group members for group assignments)
--	Homework assignment number
--	Description for each part
+Part 1
+------
+Our trace.bt file is present in the `user/` folder. Our average completion times are listed as follows:
 
-The description should indicate whether your solution for the part is working
-or not. You may also want to include anything else you would like to
-communicate to the grader, such as extra functionality you implemented or how
-you tried to fix your non-working code.
+1 CPU, Task 1: 1447.51 ms
+4 CPU, Task 1: 270.9 ms
+
+1 CPU, Task 2: 967.84 ms
+4 CPU, Task 2: 257.1 ms
