@@ -10,3 +10,7 @@ Our trace.bt file is present in the `user/` folder. Our average completion times
 
 1 CPU, Task 2: 967.84 ms
 4 CPU, Task 2: 257.1 ms
+
+Part 2
+------
+Our code correctly compiles and we have followed the instructions in the lab spec.
