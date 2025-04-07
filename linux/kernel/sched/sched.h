@@ -193,7 +193,8 @@ static inline int dl_policy(int policy)
 static inline bool valid_policy(int policy)
 {
 	return idle_policy(policy) || fair_policy(policy) ||
-		rt_policy(policy) || dl_policy(policy) || freezer_policy(policy);
+		freezer_policy(policy) || 
+		rt_policy(policy) || dl_policy(policy);
 }
 
 static inline int task_has_idle_policy(struct task_struct *p)
@@ -204,6 +205,11 @@ static inline int task_has_idle_policy(struct task_struct *p)
 static inline int task_has_rt_policy(struct task_struct *p)
 {
 	return rt_policy(p->policy);
+}
+
+static inline int task_has_freezer_policy(struct task_struct *p)
+{
+	return freezer_policy(p->policy);
 }
 
 static inline int task_has_dl_policy(struct task_struct *p)
@@ -268,6 +274,14 @@ struct rt_prio_array {
 	DECLARE_BITMAP(bitmap, MAX_RT_PRIO+1); /* include 1 bit for delimiter */
 	struct list_head queue[MAX_RT_PRIO];
 };
+
+/*
+ * This is the priority-queue data structure of the freezer scheduling class:
+ */
+struct freezer_prio_array {
+	DECLARE_BITMAP(bitmap, MAX_FREEZER_PRIO+1);
+	struct list_head queue[MAX_FREEZER_PRIO];
+}
 
 struct rt_bandwidth {
 	/* nests inside the rq lock: */
@@ -730,6 +744,46 @@ static inline bool rt_rq_is_runnable(struct rt_rq *rt_rq)
 	return rt_rq->rt_queued && rt_rq->rt_nr_running;
 }
 
+/* Real-Time classes' related field in a runqueue: */
+struct freezer_rq {
+	struct freezer_prio_array	active;
+	/* we don't have RR vs FIFO here so only need single number */
+	unsigned int		freezer_nr_running;
+	//unsigned int		rr_nr_running;
+#if defined CONFIG_SMP || defined CONFIG_RT_GROUP_SCHED
+	struct {
+		int		curr; /* highest queued rt task prio */
+#ifdef CONFIG_SMP
+		int		next; /* next highest */
+#endif
+	} highest_prio;
+#endif
+#ifdef CONFIG_SMP
+	int			overloaded;
+	struct plist_head	pushable_tasks;
+
+#endif /* CONFIG_SMP */
+	int			freezer_queued;
+
+	int			freezer_throttled;
+	u64			freezer_time;
+	u64			freezer_runtime;
+	/* Nests inside the rq lock: */
+	raw_spinlock_t		freezer_runtime_lock;
+
+#ifdef CONFIG_RT_GROUP_SCHED
+	unsigned int		freezer_nr_boosted;
+
+	struct rq		*rq;
+	struct task_group	*tg;
+#endif
+};
+
+static inline bool freezer_rq_is_runnable(struct rt_rq *rt_rq)
+{
+	return freezer_rq->freezer_queued && rt_rq->freezer_nr_running;
+}
+
 /* Deadline class' related fields in a runqueue */
 struct dl_rq {
 	/* runqueue is an rbtree, ordered by deadline */
@@ -1019,6 +1073,7 @@ struct rq {
 #endif
 
 	struct cfs_rq		cfs;
+	struct freezer_rq	freezer;
 	struct rt_rq		rt;
 	struct dl_rq		dl;
 
@@ -2368,6 +2423,7 @@ extern struct sched_class __sched_class_lowest[];
 extern const struct sched_class stop_sched_class;
 extern const struct sched_class dl_sched_class;
 extern const struct sched_class rt_sched_class;
+extern const struct sched_class freezer_sched_class;
 extern const struct sched_class fair_sched_class;
 extern const struct sched_class idle_sched_class;
 
@@ -2384,6 +2440,11 @@ static inline bool sched_dl_runnable(struct rq *rq)
 static inline bool sched_rt_runnable(struct rq *rq)
 {
 	return rq->rt.rt_queued > 0;
+}
+
+static inline bool sched_frezer_runnable(struct rq *rq)
+{
+	return rq->freezer.freezer_queued > 0;
 }
 
 static inline bool sched_fair_runnable(struct rq *rq)

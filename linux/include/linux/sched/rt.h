@@ -22,7 +22,8 @@ static inline bool task_is_realtime(struct task_struct *tsk)
 {
 	int policy = tsk->policy;
 
-	if (policy == SCHED_FIFO || policy == SCHED_RR)
+	/* used in IO counter */
+	if (policy == SCHED_FIFO || policy == SCHED_RR || policy == SCHED_FREEZER)
 		return true;
 	if (policy == SCHED_DEADLINE)
 		return true;

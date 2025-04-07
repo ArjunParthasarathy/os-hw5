@@ -165,6 +165,9 @@ static inline int __task_prio(const struct task_struct *p)
 	if (rt_prio(p->prio)) /* includes deadline */
 		return p->prio; /* [-1, 99] */
 
+	if (freezer_prio(p->prio)) /* just like rt */
+		return p->prio; /* [-1, 99] */
+
 	if (p->sched_class == &idle_sched_class)
 		return MAX_RT_PRIO + NICE_WIDTH; /* 140 */
 
@@ -2159,7 +2162,7 @@ void deactivate_task(struct rq *rq, struct task_struct *p, int flags)
 	dequeue_task(rq, p, flags);
 }
 
-static inline int __normal_prio(int policy, int rt_prio, int nice)
+static inline int __normal_prio(int policy, int rt_prio, int freezer_prio, int nice)
 {
 	int prio;
 
@@ -2167,6 +2170,8 @@ static inline int __normal_prio(int policy, int rt_prio, int nice)
 		prio = MAX_DL_PRIO - 1;
 	else if (rt_policy(policy))
 		prio = MAX_RT_PRIO - 1 - rt_prio;
+	else if (freezer_policy(policy))
+		prio = MAX_FREEZER_PRIO - 1 - freezer_prio;
 	else
 		prio = NICE_TO_PRIO(nice);
 
@@ -2182,7 +2187,7 @@ static inline int __normal_prio(int policy, int rt_prio, int nice)
  */
 static inline int normal_prio(struct task_struct *p)
 {
-	return __normal_prio(p->policy, p->rt_priority, PRIO_TO_NICE(p->static_prio));
+	return __normal_prio(p->policy, p->rt_priority, p->freezer_priority, PRIO_TO_NICE(p->static_prio));
 }
 
 /*
@@ -2202,6 +2207,7 @@ static int effective_prio(struct task_struct *p)
 	 */
 	if (!rt_prio(p->prio))
 		return p->normal_prio;
+	// TODO add section for freezer_prio(p->prio)
 	return p->prio;
 }
 
@@ -4766,10 +4772,11 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 	 * Revert to default priority/policy on fork if requested.
 	 */
 	if (unlikely(p->sched_reset_on_fork)) {
-		if (task_has_dl_policy(p) || task_has_rt_policy(p)) {
+		if (task_has_dl_policy(p) || task_has_rt_policy(p) || task_has_freezer_policy(p)) {
 			p->policy = SCHED_NORMAL;
 			p->static_prio = NICE_TO_PRIO(0);
 			p->rt_priority = 0;
+			p->freezer_priority = 0;
 		} else if (PRIO_TO_NICE(p->static_prio) < 0)
 			p->static_prio = NICE_TO_PRIO(0);
 
@@ -4787,6 +4794,8 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 		return -EAGAIN;
 	else if (rt_prio(p->prio))
 		p->sched_class = &rt_sched_class;
+	else if (freezer_prio(p->prio))
+		p->sched_class = &freezer_sched_class;
 	else
 		p->sched_class = &fair_sched_class;
 
@@ -7066,6 +7075,8 @@ static void __setscheduler_prio(struct task_struct *p, int prio)
 		p->sched_class = &dl_sched_class;
 	else if (rt_prio(prio))
 		p->sched_class = &rt_sched_class;
+	else if (freezer_prio(prio))
+		p->sched_class = &freezer_sched_class;
 	else
 		p->sched_class = &fair_sched_class;
 
@@ -7719,7 +7730,7 @@ recheck:
 	if (attr->sched_priority > MAX_RT_PRIO-1)
 		return -EINVAL;
 	if ((dl_policy(policy) && !__checkparam_dl(attr)) ||
-	    (rt_policy(policy) != (attr->sched_priority != 0)))
+	    ((rt_policy(policy) != (attr->sched_priority != 0)) && freezer_policy(policy) != (attr->sched_priority != 0)))
 		return -EINVAL;
 
 	if (user) {
@@ -7777,6 +7788,8 @@ recheck:
 		if (fair_policy(policy) && attr->sched_nice != task_nice(p))
 			goto change;
 		if (rt_policy(policy) && attr->sched_priority != p->rt_priority)
+			goto change;
+		if (freezer_policy(policy) && attr->sched_priority != p->rt_priority)
 			goto change;
 		if (dl_policy(policy) && dl_param_changed(p, attr))
 			goto change;
@@ -9904,7 +9917,8 @@ void __init sched_init(void)
 
 	/* Make sure the linker didn't screw up */
 	BUG_ON(&idle_sched_class != &fair_sched_class + 1 ||
-	       &fair_sched_class != &rt_sched_class + 1 ||
+	       &fair_sched_class != &freezer_sched_class + 1 ||
+	       &freezer_sched_class != &rt_sched_class + 1 ||
 	       &rt_sched_class   != &dl_sched_class + 1);
 #ifdef CONFIG_SMP
 	BUG_ON(&dl_sched_class != &stop_sched_class + 1);
