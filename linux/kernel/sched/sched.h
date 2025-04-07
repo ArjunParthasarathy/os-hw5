@@ -181,6 +181,11 @@ static inline int rt_policy(int policy)
 	return policy == SCHED_FIFO || policy == SCHED_RR;
 }
 
+static inline int freezer_policy(int policy)
+{
+	return policy == SCHED_FREEZER;
+}
+
 static inline int dl_policy(int policy)
 {
 	return policy == SCHED_DEADLINE;
@@ -188,7 +193,7 @@ static inline int dl_policy(int policy)
 static inline bool valid_policy(int policy)
 {
 	return idle_policy(policy) || fair_policy(policy) ||
-		rt_policy(policy) || dl_policy(policy);
+		rt_policy(policy) || dl_policy(policy) || freezer_policy(policy);
 }
 
 static inline int task_has_idle_policy(struct task_struct *p)
@@ -344,6 +349,7 @@ extern void dl_server_init(struct sched_dl_entity *dl_se, struct rq *rq,
 
 struct cfs_rq;
 struct rt_rq;
+struct freezer_rq;
 
 extern struct list_head task_groups;
 

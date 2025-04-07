@@ -592,6 +592,13 @@ struct sched_rt_entity {
 #endif
 } __randomize_layout;
 
+struct sched_freezer_entity {
+	struct rb_node 			run_node;
+	/* rq on which this entity is (to be) queued: */
+	struct freezer_rq		*freezer_rq;
+	unsigned int 			time_slice;
+};
+
 typedef bool (*dl_server_has_tasks_f)(struct sched_dl_entity *);
 typedef struct task_struct *(*dl_server_pick_f)(struct sched_dl_entity *);
 
@@ -796,6 +803,7 @@ struct task_struct {
 
 	struct sched_entity		se;
 	struct sched_rt_entity		rt;
+	struct sched_freezer_entity	fe;
 	struct sched_dl_entity		dl;
 	struct sched_dl_entity		*dl_server;
 	const struct sched_class	*sched_class;
