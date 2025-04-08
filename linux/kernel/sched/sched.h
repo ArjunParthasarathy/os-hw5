@@ -279,8 +279,8 @@ struct rt_prio_array {
  * This is the priority-queue data structure of the freezer scheduling class:
  */
 struct freezer_prio_array {
-	DECLARE_BITMAP(bitmap, MAX_FREEZER_PRIO+1);
-	struct list_head queue[MAX_FREEZER_PRIO];
+	DECLARE_BITMAP(bitmap, MAX_FREEZER_PRIO-MAX_RT_PRIO);/* include 1 bit for delimiter */
+	struct list_head queue[MAX_FREEZER_PRIO-MAX_RT_PRIO-1];
 }
 
 struct rt_bandwidth {
@@ -750,7 +750,7 @@ struct freezer_rq {
 	/* we don't have RR vs FIFO here so only need single number */
 	unsigned int		freezer_nr_running;
 	//unsigned int		rr_nr_running;
-#if defined CONFIG_SMP || defined CONFIG_RT_GROUP_SCHED
+#if defined CONFIG_SMP /* no gropu sched for freezer */
 	struct {
 		int		curr; /* highest queued rt task prio */
 #ifdef CONFIG_SMP
@@ -770,13 +770,6 @@ struct freezer_rq {
 	u64			freezer_runtime;
 	/* Nests inside the rq lock: */
 	raw_spinlock_t		freezer_runtime_lock;
-
-#ifdef CONFIG_RT_GROUP_SCHED
-	unsigned int		freezer_nr_boosted;
-
-	struct rq		*rq;
-	struct task_group	*tg;
-#endif
 };
 
 static inline bool freezer_rq_is_runnable(struct rt_rq *rt_rq)

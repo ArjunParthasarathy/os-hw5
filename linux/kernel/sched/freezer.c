@@ -31,42 +31,32 @@ void init_freezer_rq(struct freezer_rq *freezer_rq)
 	raw_spin_lock_init(&freezer_rq->freezer_runtime_lock);
 }
 
-#ifdef CONFIG_RT_GROUP_SCHED
-static void destroy_rt_bandwidth(struct rt_bandwidth *rt_b)
-{
-	hrtimer_cancel(&rt_b->rt_period_timer);
-}
+/* No group scheduling so don't need that part of RT */
 
-#define freezer_entity_is_task(freezer_se) (!(freezer_se)->my_q)
+#define rt_entity_is_task(freezer_se) (1)
 
 static inline struct task_struct *freezer_task_of(struct sched_freezer_entity *freezer_se)
 {
-#ifdef CONFIG_SCHED_DEBUG
-	WARN_ON_ONCE(!freezer_entity_is_task(freezer_se));
-#endif
-	return container_of(freezer_se, struct task_struct, rt);
+	return container_of(freezer_se, struct task_struct, freezer);
 }
 
 static inline struct rq *rq_of_freezer_rq(struct freezer_rq *freezer_rq)
 {
-	return fr_rq->rq;
+	return container_of(freezer_rq, struct rq, freezer);
 }
 
-static inline struct rq *rq_of_freezer_se(struct sched_freezer_entity *rt_se)
+static inline struct rq *rq_of_freezer_se(struct sched_freezer_entity *freezer_se)
 {
-	struct freezer_rq *freezer_rq = freezer_se->freezer_rq;
+	struct task_struct *p = freezer_task_of(freezer_se);
 
-	return freezer_rq->rq;
+	return task_rq(p);
 }
 
-static inline struct freezer_rq *freezer_rq_of_se(struct sched_freezer_entity *fr_se)
+static inline struct freezer_rq *freezer_rq_of_se(struct sched_freezer_entity *freezer_se)
 {
-	return fr_se->fr_rq;
-}
+	struct rq *rq = rq_of_freezer_se(freezer_se);
 
-static inline int on_freezer_rq(struct sched_freezer_entity *freezer_se)
-{
-	return freezer_se->on_rq;
+	return &rq->freezer;
 }
 
 void unregister_rt_sched_group(struct task_group *tg) { }
@@ -77,7 +67,6 @@ int alloc_rt_sched_group(struct task_group *tg, struct task_group *parent)
 {
 	return 1;
 }
-#endif /* CONFIG_RT_GROUP_SCHED */
 
 #ifdef CONFIG_SMP
 
@@ -239,136 +228,11 @@ static inline bool freezer_task_fits_capacity(struct task_struct *p, int cpu)
 {
 	return true;
 }
-#endif
+#endif /* CONFIG_UCLAMP_TASK */
 
-#ifdef CONFIG_RT_GROUP_SCHED
-
-static inline u64 sched_freezer_runtime(struct freezfreezer_rq *freezfreezer_rq)
+static inline u64 sched_freezer_runtime(struct freezer_rq *freezer_rq)
 {
-	if (!freezer_rq->tg)
-		return RUNTIME_INF;
-
 	return freezer_rq->freezer_runtime;
-}
-
-static inline u64 sched_freezer_period(struct freezer_rq *freezer_rq)
-{
-	return ktime_to_ns(freezer_rq->tg->rt_bandwidth.rt_period);
-}
-
-typedef struct task_group *freezer_rq_iter_t;
-
-static inline struct task_group *next_task_group(struct task_group *tg)
-{
-	do {
-		tg = list_entry_rcu(tg->list.next,
-			typeof(struct task_group), list);
-	} while (&tg->list != &task_groups && task_group_is_autogroup(tg));
-
-	if (&tg->list == &task_groups)
-		tg = NULL;
-
-	return tg;
-}
-
-#define for_each_freezer_rq(freezer_rq, iter, rq)					\
-	for (iter = container_of(&task_groups, typeof(*iter), list);	\
-		(iter = next_task_group(iter)) &&			\
-		(freezer_rq = iter->freezer_rq[cpu_of(rq)]);)
-
-#define for_each_sched_freezer_entity(freezer_se) \
-	for (; freezer_se; freezer_se = freezer_se->parent)
-
-static inline struct freezer_rq *group_freezer_rq(struct sched_freezer_entity *freezer_se)
-{
-	return freezer_se->my_q;
-}
-
-static void enqueue_freezer_entity(struct sched_freezer_entity *freezer_se, unsigned int flags);
-static void dequeue_freezer_entity(struct sched_freezer_entity *freezer_se, unsigned int flags);
-
-static void sched_freezer_rq_enqueue(struct freezer_rq *freezer_rq)
-{
-	struct task_struct *curr = rq_of_freezer_rq(freezer_rq)->curr;
-	struct rq *rq = rq_of_freezer_rq(freezer_rq);
-	struct sched_freezer_entity *freezer_se;
-
-	int cpu = cpu_of(rq);
-
-	freezer_se = freezer_rq->tg->freezer_se[cpu];
-
-	if (freezer_rq->freezer_nr_running) {
-		if (!rt_se)
-			enqueue_top_freezer_rq(rt_rq);
-		else if (!on_freezer_rq(rt_se))
-			enqueue_rt_entity(rt_se, 0);
-
-		if (rt_rq->highest_prio.curr < curr->prio)
-			resched_curr(rq);
-	}
-}
-
-static void sched_rt_rq_dequeue(struct rt_rq *rt_rq)
-{
-	struct sched_rt_entity *rt_se;
-	int cpu = cpu_of(rq_of_rt_rq(rt_rq));
-
-	rt_se = rt_rq->tg->rt_se[cpu];
-
-	if (!rt_se) {
-		dequeue_top_rt_rq(rt_rq, rt_rq->rt_nr_running);
-		/* Kick cpufreq (see the comment in kernel/sched/sched.h). */
-		cpufreq_update_util(rq_of_rt_rq(rt_rq), 0);
-	}
-	else if (on_rt_rq(rt_se))
-		dequeue_rt_entity(rt_se, 0);
-}
-
-static inline int rt_rq_throttled(struct rt_rq *rt_rq)
-{
-	return rt_rq->rt_throttled && !rt_rq->rt_nr_boosted;
-}
-
-static int rt_se_boosted(struct sched_rt_entity *rt_se)
-{
-	struct rt_rq *rt_rq = group_rt_rq(rt_se);
-	struct task_struct *p;
-
-	if (rt_rq)
-		return !!rt_rq->rt_nr_boosted;
-
-	p = rt_task_of(rt_se);
-	return p->prio != p->normal_prio;
-}
-
-#ifdef CONFIG_SMP
-static inline const struct cpumask *sched_rt_period_mask(void)
-{
-	return this_rq()->rd->span;
-}
-#else
-static inline const struct cpumask *sched_rt_period_mask(void)
-{
-	return cpu_online_mask;
-}
-#endif
-
-static inline
-struct rt_rq *sched_rt_period_rt_rq(struct rt_bandwidth *rt_b, int cpu)
-{
-	return container_of(rt_b, struct task_group, rt_bandwidth)->rt_rq[cpu];
-}
-
-static inline struct rt_bandwidth *sched_rt_bandwidth(struct rt_rq *rt_rq)
-{
-	return &rt_rq->tg->rt_bandwidth;
-}
-
-#else /* !CONFIG_RT_GROUP_SCHED */
-
-static inline u64 sched_rt_runtime(struct rt_rq *rt_rq)
-{
-	return rt_rq->rt_runtime;
 }
 
 static inline u64 sched_rt_period(struct rt_rq *rt_rq)
@@ -376,41 +240,41 @@ static inline u64 sched_rt_period(struct rt_rq *rt_rq)
 	return ktime_to_ns(def_rt_bandwidth.rt_period);
 }
 
-typedef struct rt_rq *rt_rq_iter_t;
+typedef struct freezer_rq *freezer_rq_iter_t;
 
-#define for_each_rt_rq(rt_rq, iter, rq) \
-	for ((void) iter, rt_rq = &rq->rt; rt_rq; rt_rq = NULL)
+#define for_each_freezer_rq(freezer_rq, iter, rq) \
+	for ((void) iter, freezer_rq = &rq->freezer; freezer_rq; rt_rq = NULL)
 
-#define for_each_sched_rt_entity(rt_se) \
-	for (; rt_se; rt_se = NULL)
+#define for_each_sched_freezer_entity(freezer_se) \
+	for (; freezer_se; freezer_se = NULL)
 
-static inline struct rt_rq *group_rt_rq(struct sched_rt_entity *rt_se)
+static inline struct freezer_rq *group_freezer_rq(struct sched_freezer_entity *freezer_se)
 {
 	return NULL;
 }
 
-static inline void sched_rt_rq_enqueue(struct rt_rq *rt_rq)
+static inline void sched_freezer_rq_enqueue(struct freezer_rq *freezer_rq)
 {
-	struct rq *rq = rq_of_rt_rq(rt_rq);
+	struct rq *rq = rq_of_freezer_rq(freezer_rq);
 
-	if (!rt_rq->rt_nr_running)
+	if (!freezer_rq->freezer_nr_running)
 		return;
 
-	enqueue_top_rt_rq(rt_rq);
+	enqueue_top_freezer_rq(freezer_rq);
 	resched_curr(rq);
 }
 
-static inline void sched_rt_rq_dequeue(struct rt_rq *rt_rq)
+static inline void sched_freezer_rq_dequeue(struct rt_rq *rt_rq)
 {
-	dequeue_top_rt_rq(rt_rq, rt_rq->rt_nr_running);
+	dequeue_top_freezer_rq(freezer_rq, freezer_rq->freezer_nr_running);
 }
 
-static inline int rt_rq_throttled(struct rt_rq *rt_rq)
+static inline int freezer_rq_throttled(struct freezer_rq *freezer_rq)
 {
-	return rt_rq->rt_throttled;
+	return freezer_rq->freezer_throttled;
 }
 
-static inline const struct cpumask *sched_rt_period_mask(void)
+static inline const struct cpumask *sched_freezer_period_mask(void)
 {
 	return cpu_online_mask;
 }
@@ -418,15 +282,13 @@ static inline const struct cpumask *sched_rt_period_mask(void)
 static inline
 struct rt_rq *sched_rt_period_rt_rq(struct rt_bandwidth *rt_b, int cpu)
 {
-	return &cpu_rq(cpu)->rt;
+	return &cpu_rq(cpu)->freezer;
 }
 
 static inline struct rt_bandwidth *sched_rt_bandwidth(struct rt_rq *rt_rq)
 {
 	return &def_rt_bandwidth;
 }
-
-#endif /* CONFIG_RT_GROUP_SCHED */
 
 bool sched_rt_bandwidth_account(struct rt_rq *rt_rq)
 {
@@ -440,10 +302,10 @@ bool sched_rt_bandwidth_account(struct rt_rq *rt_rq)
 /*
  * We ran out of runtime, see if we can borrow some from our neighbours.
  */
-static void do_balance_runtime(struct rt_rq *rt_rq)
+static void do_balance_runtime(struct freezer_rq *freezer_rq)
 {
 	struct rt_bandwidth *rt_b = sched_rt_bandwidth(rt_rq);
-	struct root_domain *rd = rq_of_rt_rq(rt_rq)->rd;
+	struct root_domain *rd = rq_of_freezer_rq(rt_rq)->rd;
 	int i, weight;
 	u64 rt_period;
 
@@ -619,23 +481,11 @@ static int do_sched_rt_period_timer(struct rt_bandwidth *rt_b, int overrun)
 	const struct cpumask *span;
 
 	span = sched_rt_period_mask();
-#ifdef CONFIG_RT_GROUP_SCHED
-	/*
-	 * FIXME: isolated CPUs should really leave the root task group,
-	 * whether they are isolcpus or were isolated via cpusets, lest
-	 * the timer run on a CPU which does not service all runqueues,
-	 * potentially leaving other CPUs indefinitely throttled.  If
-	 * isolation is really required, the user will turn the throttle
-	 * off to kill the perturbations it causes anyway.  Meanwhile,
-	 * this maintains functionality for boot and/or troubleshooting.
-	 */
-	if (rt_b == &root_task_group.rt_bandwidth)
-		span = cpu_online_mask;
-#endif
+
 	for_each_cpu(i, span) {
 		int enqueue = 0;
 		struct rt_rq *rt_rq = sched_rt_period_rt_rq(rt_b, i);
-		struct rq *rq = rq_of_rt_rq(rt_rq);
+		struct rq *rq = rq_of_freezer_rq(rt_rq);
 		struct rq_flags rf;
 		int skip;
 
@@ -646,7 +496,7 @@ static int do_sched_rt_period_timer(struct rt_bandwidth *rt_b, int overrun)
 		raw_spin_lock(&rt_rq->rt_runtime_lock);
 		if (!sched_feat(RT_RUNTIME_SHARE) && rt_rq->rt_runtime != RUNTIME_INF)
 			rt_rq->rt_runtime = rt_b->rt_runtime;
-		skip = !rt_rq->rt_time && !rt_rq->rt_nr_running;
+		skip = !rt_rq->rt_time && !rt_rq->freezer_nr_running;
 		raw_spin_unlock(&rt_rq->rt_runtime_lock);
 		if (skip)
 			continue;
@@ -673,15 +523,15 @@ static int do_sched_rt_period_timer(struct rt_bandwidth *rt_b, int overrun)
 				 * and this unthrottle will get accounted as
 				 * 'runtime'.
 				 */
-				if (rt_rq->rt_nr_running && rq->curr == rq->idle)
+				if (rt_rq->freezer_nr_running && rq->curr == rq->idle)
 					rq_clock_cancel_skipupdate(rq);
 			}
-			if (rt_rq->rt_time || rt_rq->rt_nr_running)
+			if (rt_rq->rt_time || rt_rq->freezer_nr_running)
 				idle = 0;
 			raw_spin_unlock(&rt_rq->rt_runtime_lock);
-		} else if (rt_rq->rt_nr_running) {
+		} else if (rt_rq->freezer_nr_running) {
 			idle = 0;
-			if (!rt_rq_throttled(rt_rq))
+			if (!freezer_rq_throttled(rt_rq))
 				enqueue = 1;
 		}
 		if (rt_rq->rt_throttled)
@@ -698,16 +548,9 @@ static int do_sched_rt_period_timer(struct rt_bandwidth *rt_b, int overrun)
 	return idle;
 }
 
-static inline int rt_se_prio(struct sched_rt_entity *rt_se)
+static inline int freezer_se_prio(struct sched_freezer_entity *freezer_se)
 {
-#ifdef CONFIG_RT_GROUP_SCHED
-	struct rt_rq *rt_rq = group_rt_rq(rt_se);
-
-	if (rt_rq)
-		return rt_rq->highest_prio.curr;
-#endif
-
-	return rt_task_of(rt_se)->prio;
+	return freezer_task_of(freezer_se)->prio;
 }
 
 static int sched_rt_runtime_exceeded(struct rt_rq *rt_rq)
@@ -715,7 +558,7 @@ static int sched_rt_runtime_exceeded(struct rt_rq *rt_rq)
 	u64 runtime = sched_rt_runtime(rt_rq);
 
 	if (rt_rq->rt_throttled)
-		return rt_rq_throttled(rt_rq);
+		return freezer_rq_throttled(rt_rq);
 
 	if (runtime >= sched_rt_period(rt_rq))
 		return 0;
@@ -744,8 +587,8 @@ static int sched_rt_runtime_exceeded(struct rt_rq *rt_rq)
 			rt_rq->rt_time = 0;
 		}
 
-		if (rt_rq_throttled(rt_rq)) {
-			sched_rt_rq_dequeue(rt_rq);
+		if (freezer_rq_throttled(rt_rq)) {
+			sched_freezer_rq_dequeue(rt_rq);
 			return 1;
 		}
 	}
@@ -760,7 +603,7 @@ static int sched_rt_runtime_exceeded(struct rt_rq *rt_rq)
 static void update_curr_freezer(struct rq *rq)
 {
 	struct task_struct *curr = rq->curr;
-	struct sched_rt_entity *rt_se = &curr->rt;
+	struct sched_freezer_entity *freezer_se = &curr->rt;
 	s64 delta_exec;
 
 	if (curr->sched_class != &rt_sched_class)
@@ -773,8 +616,8 @@ static void update_curr_freezer(struct rq *rq)
 	if (!rt_bandwidth_enabled())
 		return;
 
-	for_each_sched_rt_entity(rt_se) {
-		struct rt_rq *rt_rq = rt_rq_of_se(rt_se);
+	for_each_sched_freezer_entity(freezer_se) {
+		struct rt_rq *rt_rq = freezer_rq_of_se(freezer_se);
 		int exceeded;
 
 		if (sched_rt_runtime(rt_rq) != RUNTIME_INF) {
@@ -791,9 +634,9 @@ static void update_curr_freezer(struct rq *rq)
 }
 
 static void
-dequeue_top_rt_rq(struct rt_rq *rt_rq, unsigned int count)
+dequeue_top_freezer_rq(struct rt_rq *rt_rq, unsigned int count)
 {
-	struct rq *rq = rq_of_rt_rq(rt_rq);
+	struct rq *rq = rq_of_freezer_rq(rt_rq);
 
 	BUG_ON(&rq->rt != rt_rq);
 
@@ -807,21 +650,20 @@ dequeue_top_rt_rq(struct rt_rq *rt_rq, unsigned int count)
 
 }
 
-static void
-enqueue_top_rt_rq(struct rt_rq *rt_rq)
+static voidfreezer(struct rt_rq *rt_rq)
 {
-	struct rq *rq = rq_of_rt_rq(rt_rq);
+	struct rq *rq = rq_of_freezer_rq(rt_rq);
 
 	BUG_ON(&rq->rt != rt_rq);
 
 	if (rt_rq->rt_queued)
 		return;
 
-	if (rt_rq_throttled(rt_rq))
+	if (freezer_rq_throttled(rt_rq))
 		return;
 
-	if (rt_rq->rt_nr_running) {
-		add_nr_running(rq, rt_rq->rt_nr_running);
+	if (rt_rq->freezer_nr_running) {
+		add_nr_running(rq, rt_rq->freezer_nr_running);
 		rt_rq->rt_queued = 1;
 	}
 
@@ -834,15 +676,8 @@ enqueue_top_rt_rq(struct rt_rq *rt_rq)
 static void
 inc_rt_prio_smp(struct rt_rq *rt_rq, int prio, int prev_prio)
 {
-	struct rq *rq = rq_of_rt_rq(rt_rq);
+	struct rq *rq = rq_of_freezer_rq(rt_rq);
 
-#ifdef CONFIG_RT_GROUP_SCHED
-	/*
-	 * Change rq's cpupri only if rt_rq is the top queue.
-	 */
-	if (&rq->rt != rt_rq)
-		return;
-#endif
 	if (rq->online && prio < prev_prio)
 		cpupri_set(&rq->rd->cpupri, rq->cpu, prio);
 }
@@ -850,15 +685,8 @@ inc_rt_prio_smp(struct rt_rq *rt_rq, int prio, int prev_prio)
 static void
 dec_rt_prio_smp(struct rt_rq *rt_rq, int prio, int prev_prio)
 {
-	struct rq *rq = rq_of_rt_rq(rt_rq);
+	struct rq *rq = rq_of_freezer_rq(rt_rq);
 
-#ifdef CONFIG_RT_GROUP_SCHED
-	/*
-	 * Change rq's cpupri only if rt_rq is the top queue.
-	 */
-	if (&rq->rt != rt_rq)
-		return;
-#endif
 	if (rq->online && rt_rq->highest_prio.curr != prev_prio)
 		cpupri_set(&rq->rd->cpupri, rq->cpu, rt_rq->highest_prio.curr);
 }
@@ -872,7 +700,7 @@ void dec_rt_prio_smp(struct rt_rq *rt_rq, int prio, int prev_prio) {}
 
 #endif /* CONFIG_SMP */
 
-#if defined CONFIG_SMP || defined CONFIG_RT_GROUP_SCHED
+#if defined CONFIG_SMP /* for RT this has || defined CONFIG_RT_GROUP_SCHED */
 static void
 inc_rt_prio(struct rt_rq *rt_rq, int prio)
 {
@@ -889,7 +717,7 @@ dec_rt_prio(struct rt_rq *rt_rq, int prio)
 {
 	int prev_prio = rt_rq->highest_prio.curr;
 
-	if (rt_rq->rt_nr_running) {
+	if (rt_rq->freezer_nr_running) {
 
 		WARN_ON(prio < prev_prio);
 
@@ -913,97 +741,72 @@ dec_rt_prio(struct rt_rq *rt_rq, int prio)
 
 #else
 
-static inline void inc_rt_prio(struct rt_rq *rt_rq, int prio) {}
-static inline void dec_rt_prio(struct rt_rq *rt_rq, int prio) {}
+static inline void inc_rt_prio(struct freezer_rq *freezer_rq, int prio) {}
+static inline void dec_rt_prio(struct freezer_rq *freezer_rq, int prio) {}
 
-#endif /* CONFIG_SMP || CONFIG_RT_GROUP_SCHED */
-
-#ifdef CONFIG_RT_GROUP_SCHED
+#endif /* CONFIG_SMP */
 
 static void
-inc_rt_group(struct sched_rt_entity *rt_se, struct rt_rq *rt_rq)
-{
-	if (rt_se_boosted(rt_se))
-		rt_rq->rt_nr_boosted++;
-
-	if (rt_rq->tg)
-		start_rt_bandwidth(&rt_rq->tg->rt_bandwidth);
-}
-
-static void
-dec_rt_group(struct sched_rt_entity *rt_se, struct rt_rq *rt_rq)
-{
-	if (rt_se_boosted(rt_se))
-		rt_rq->rt_nr_boosted--;
-
-	WARN_ON(!rt_rq->rt_nr_running && rt_rq->rt_nr_boosted);
-}
-
-#else /* CONFIG_RT_GROUP_SCHED */
-
-static void
-inc_rt_group(struct sched_rt_entity *rt_se, struct rt_rq *rt_rq)
+inc_rt_group(struct sched_freezer_entity *freezer_se, struct freezer_rq *freezer_rq)
 {
 	start_rt_bandwidth(&def_rt_bandwidth);
 }
 
 static inline
-void dec_rt_group(struct sched_rt_entity *rt_se, struct rt_rq *rt_rq) {}
-
-#endif /* CONFIG_RT_GROUP_SCHED */
+void dec_rt_group(struct sched_freezer_entity *freezer_se, struct freezer_rq *freezer_rq) {}
 
 static inline
-unsigned int rt_se_nr_running(struct sched_rt_entity *rt_se)
+unsigned int freezer_se_nr_running(struct sched_freezer_entity *freezer_se)
 {
-	struct rt_rq *group_rq = group_rt_rq(rt_se);
+	struct freezer_rq *group_rq = group_freezer_rq(freezer_se);
 
 	if (group_rq)
-		return group_rq->rt_nr_running;
+		return group_rq->freezer_nr_running;
 	else
 		return 1;
 }
 
 static inline
-unsigned int rt_se_rr_nr_running(struct sched_rt_entity *rt_se)
+unsigned int freezer_se_rr_nr_running(struct sched_freezer_entity *freezer_se)
 {
-	struct rt_rq *group_rq = group_rt_rq(rt_se);
+	struct rt_rq *group_rq = group_rt_rq(freezer_se);
 	struct task_struct *tsk;
 
 	if (group_rq)
 		return group_rq->rr_nr_running;
 
-	tsk = rt_task_of(rt_se);
+	tsk = freezer_task_of(freezer_se);
 
 	return (tsk->policy == SCHED_RR) ? 1 : 0;
 }
 
 static inline
-void inc_rt_tasks(struct sched_rt_entity *rt_se, struct rt_rq *rt_rq)
+void inc_freezer_tasks(struct sched_freezer_entity *freezer_se, struct rt_rq *rt_rq)
 {
-	int prio = rt_se_prio(rt_se);
+	int prio = freezer_se_prio(freezer_se);
 
 	WARN_ON(!rt_prio(prio));
-	rt_rq->rt_nr_running += rt_se_nr_running(rt_se);
-	rt_rq->rr_nr_running += rt_se_rr_nr_running(rt_se);
+	rt_rq->freezer_nr_running += freezer_se_nr_running(freezer_se);
+	rt_rq->rr_nr_running += freezer_se_rr_nr_running(freezer_se);
 
 	inc_rt_prio(rt_rq, prio);
-	inc_rt_group(rt_se, rt_rq);
+	inc_rt_group(freezer_se, rt_rq);
 }
 
 static inline
-void dec_rt_tasks(struct sched_rt_entity *rt_se, struct rt_rq *rt_rq)
+void dec_freezer_tasks(struct sched_freezer_entity *freezer_se, struct rt_rq *rt_rq)
 {
-	WARN_ON(!rt_prio(rt_se_prio(rt_se)));
-	WARN_ON(!rt_rq->rt_nr_running);
-	rt_rq->rt_nr_running -= rt_se_nr_running(rt_se);
-	rt_rq->rr_nr_running -= rt_se_rr_nr_running(rt_se);
+	WARN_ON(!rt_prio(freezer_se_prio(freezer_se)));
+	WARN_ON(!rt_rq->freezer_nr_running);
+	rt_rq->freezer_nr_running -= freezer_se_nr_running(freezer_se);
+	rt_rq->rr_nr_running -= freezer_se_rr_nr_running(freezer_se);
 
-	dec_rt_prio(rt_rq, rt_se_prio(rt_se));
-	dec_rt_group(rt_se, rt_rq);
+	dec_rt_prio(rt_rq, freezer_se_prio(freezer_se));
+	dec_rt_group(freezer_se, rt_rq);
 }
 
 /*
- * Change rt_se->run_list location unless SAVE && !MOVE
+ * Change freezer_se->run_list location unless SAVE && !MOVE
  *
  * assumes ENQUEUE/DEQUEUE flags match
  */
@@ -1015,30 +818,24 @@ static inline bool move_entity(unsigned int flags)
 	return true;
 }
 
-static void __delist_rt_entity(struct sched_rt_entity *rt_se, struct rt_prio_array *array)
+static void __delist_freezer_entity(struct sched_freezer_entity *freezer_se, struct rt_prio_array *array)
 {
-	list_del_init(&rt_se->run_list);
+	list_del_init(&freezer_se->run_list);
 
-	if (list_empty(array->queue + rt_se_prio(rt_se)))
-		__clear_bit(rt_se_prio(rt_se), array->bitmap);
+	if (list_empty(array->queue + freezer_se_prio(freezer_se)))
+		__clear_bit(freezer_se_prio(freezer_se), array->bitmap);
 
-	rt_se->on_list = 0;
+	freezer_se->on_list = 0;
 }
 
 static inline struct sched_statistics *
-__schedstats_from_rt_se(struct sched_rt_entity *rt_se)
+__schedstats_from_freezer_se(struct sched_freezer_entity *freezer_se)
 {
-#ifdef CONFIG_RT_GROUP_SCHED
-	/* schedstats is not supported for rt group. */
-	if (!freezer_entity_is_task(rt_se))
-		return NULL;
-#endif
-
-	return &rt_task_of(rt_se)->stats;
+	return &freezer_task_of(freezer_se)->stats;
 }
 
 static inline void
-update_stats_wait_start_rt(struct rt_rq *rt_rq, struct sched_rt_entity *rt_se)
+update_stats_wait_start_freezer(struct freezer_rq *freezer_rq, struct sched_freezer_entity *freezer_se)
 {
 	struct sched_statistics *stats;
 	struct task_struct *p = NULL;
@@ -1046,18 +843,18 @@ update_stats_wait_start_rt(struct rt_rq *rt_rq, struct sched_rt_entity *rt_se)
 	if (!schedstat_enabled())
 		return;
 
-	if (freezer_entity_is_task(rt_se))
-		p = rt_task_of(rt_se);
+	if (freezer_entity_is_task(freezer_se))
+		p = freezer_task_of(freezer_se);
 
-	stats = __schedstats_from_rt_se(rt_se);
+	stats = __schedstats_from_freezer_se(freezer_se);
 	if (!stats)
 		return;
 
-	__update_stats_wait_start(rq_of_rt_rq(rt_rq), p, stats);
+	__update_stats_wait_start(rq_of_freezer_rq(freezer_rq), p, stats);
 }
 
 static inline void
-update_stats_enqueue_sleeper_rt(struct rt_rq *rt_rq, struct sched_rt_entity *rt_se)
+update_stats_enqueue_sleeper_freezer(struct freezer_rq *freezer_rq, struct sched_freezer_entity *freezer_se)
 {
 	struct sched_statistics *stats;
 	struct task_struct *p = NULL;
@@ -1065,29 +862,29 @@ update_stats_enqueue_sleeper_rt(struct rt_rq *rt_rq, struct sched_rt_entity *rt_
 	if (!schedstat_enabled())
 		return;
 
-	if (freezer_entity_is_task(rt_se))
-		p = rt_task_of(rt_se);
+	if (freezer_entity_is_task(freezer_se))
+		p = freezer_task_of(freezer_se);
 
-	stats = __schedstats_from_rt_se(rt_se);
+	stats = __schedstats_from_freezer_se(freezer_se);
 	if (!stats)
 		return;
 
-	__update_stats_enqueue_sleeper(rq_of_rt_rq(rt_rq), p, stats);
+	__update_stats_enqueue_sleeper(rq_of_freezer_rq(freezer_rq), p, stats);
 }
 
 static inline void
-update_stats_enqueue_rt(struct rt_rq *rt_rq, struct sched_rt_entity *rt_se,
+update_stats_enqueue_freezer(struct freezer_rq *freezer_rq, struct sched_freezer_entity *freezer_se,
 			int flags)
 {
 	if (!schedstat_enabled())
 		return;
 
 	if (flags & ENQUEUE_WAKEUP)
-		update_stats_enqueue_sleeper_rt(rt_rq, rt_se);
+		update_stats_enqueue_sleeper_freezer(freezer_rq, freezer_se);
 }
 
 static inline void
-update_stats_wait_end_rt(struct rt_rq *rt_rq, struct sched_rt_entity *rt_se)
+update_stats_wait_end_freezer(struct freezer_rq *freezer_rq, struct sched_freezer_entity *freezer_se)
 {
 	struct sched_statistics *stats;
 	struct task_struct *p = NULL;
@@ -1095,18 +892,18 @@ update_stats_wait_end_rt(struct rt_rq *rt_rq, struct sched_rt_entity *rt_se)
 	if (!schedstat_enabled())
 		return;
 
-	if (freezer_entity_is_task(rt_se))
-		p = rt_task_of(rt_se);
+	if (freezer_entity_is_task(freezer_se))
+		p = freezer_task_of(freezer_se);
 
-	stats = __schedstats_from_rt_se(rt_se);
+	stats = __schedstats_from_freezer_se(freezer_se);
 	if (!stats)
 		return;
 
-	__update_stats_wait_end(rq_of_rt_rq(rt_rq), p, stats);
+	__update_stats_wait_end(rq_of_freezer_rq(freezer_rq), p, stats);
 }
 
 static inline void
-update_stats_dequeue_rt(struct rt_rq *rt_rq, struct sched_rt_entity *rt_se,
+update_stats_dequeue_rt(struct rt_rq *rt_rq, struct sched_freezer_entity *freezer_se,
 			int flags)
 {
 	struct task_struct *p = NULL;
@@ -1114,8 +911,8 @@ update_stats_dequeue_rt(struct rt_rq *rt_rq, struct sched_rt_entity *rt_se,
 	if (!schedstat_enabled())
 		return;
 
-	if (freezer_entity_is_task(rt_se))
-		p = rt_task_of(rt_se);
+	if (freezer_entity_is_task(freezer_se))
+		p = freezer_task_of(freezer_se);
 
 	if ((flags & DEQUEUE_SLEEP) && p) {
 		unsigned int state;
@@ -1123,130 +920,119 @@ update_stats_dequeue_rt(struct rt_rq *rt_rq, struct sched_rt_entity *rt_se,
 		state = READ_ONCE(p->__state);
 		if (state & TASK_INTERRUPTIBLE)
 			__schedstat_set(p->stats.sleep_start,
-					rq_clock(rq_of_rt_rq(rt_rq)));
+					rq_clock(rq_of_freezer_rq(freezer_rq)));
 
 		if (state & TASK_UNINTERRUPTIBLE)
 			__schedstat_set(p->stats.block_start,
-					rq_clock(rq_of_rt_rq(rt_rq)));
+					rq_clock(rq_of_freezer_rq(freezer_rq)));
 	}
 }
 
-static void __enqueue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flags)
+static void __enqueue_freezer_entity(struct sched_freezer_entity *freezer_se, unsigned int flags)
 {
-	struct rt_rq *rt_rq = rt_rq_of_se(rt_se);
-	struct rt_prio_array *array = &rt_rq->active;
-	struct rt_rq *group_rq = group_rt_rq(rt_se);
-	struct list_head *queue = array->queue + rt_se_prio(rt_se);
-
-	/*
-	 * Don't enqueue the group if its throttled, or when empty.
-	 * The latter is a consequence of the former when a child group
-	 * get throttled and the current group doesn't have any other
-	 * active members.
-	 */
-	if (group_rq && (rt_rq_throttled(group_rq) || !group_rq->rt_nr_running)) {
-		if (rt_se->on_list)
-			__delist_rt_entity(rt_se, array);
-		return;
-	}
+	struct freezer_rq *freezer_rq = freezer_rq_of_se(freezer_se);
+	struct freezer_prio_array *array = &rt_rq->active;
+	/* this is NULL since no groups */
+	struct freezer_rq *group_rq = group_freezer_rq(freezer_se);
+	struct list_head *queue = array->queue + freezer_se_prio(freezer_se);
 
 	if (move_entity(flags)) {
-		WARN_ON_ONCE(rt_se->on_list);
+		WARN_ON_ONCE(freezer_se->on_list);
 		if (flags & ENQUEUE_HEAD)
-			list_add(&rt_se->run_list, queue);
+			list_add(&freezer_se->run_list, queue);
 		else
-			list_add_tail(&rt_se->run_list, queue);
+			list_add_tail(&freezer_se->run_list, queue);
 
-		__set_bit(rt_se_prio(rt_se), array->bitmap);
-		rt_se->on_list = 1;
+		__set_bit(freezer_se_prio(freezer_se), array->bitmap);
+		freezer_se->on_list = 1;
 	}
-	rt_se->on_rq = 1;
+	freezer_se->on_rq = 1;
 
-	inc_rt_tasks(rt_se, rt_rq);
+	inc_freezer_tasks(freezer_se, freezer_rq);
 }
 
-static void __dequeue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flags)
+static void __dequeue_freezer_entity(struct sched_freezer_entity *freezer_se, unsigned int flags)
 {
-	struct rt_rq *rt_rq = rt_rq_of_se(rt_se);
-	struct rt_prio_array *array = &rt_rq->active;
+	struct freezer_rq *freezer_rq = freezer_rq_of_se(freezer_se);
+	struct freezer_prio_array *array = &rt_rq->active;
 
 	if (move_entity(flags)) {
-		WARN_ON_ONCE(!rt_se->on_list);
-		__delist_rt_entity(rt_se, array);
+		WARN_ON_ONCE(!freezer_se->on_list);
+		__delist_freezer_entity(freezer_se, array);
 	}
-	rt_se->on_rq = 0;
+	freezer_se->on_rq = 0;
 
-	dec_rt_tasks(rt_se, rt_rq);
+	dec_freezer_tasks(freezer_se, freezer_rq);
 }
 
 /*
  * Because the prio of an upper entry depends on the lower
  * entries, we must remove entries top - down.
  */
-static void dequeue_rt_stack(struct sched_rt_entity *rt_se, unsigned int flags)
+static void dequeue_freezer_stack(struct sched_freezer_entity *freezer_se, unsigned int flags)
 {
-	struct sched_rt_entity *back = NULL;
-	unsigned int rt_nr_running;
+	struct sched_freezer_entity *back = NULL;
+	unsigned int freezer_nr_running;
 
-	for_each_sched_rt_entity(rt_se) {
-		rt_se->back = back;
-		back = rt_se;
+	for_each_sched_freezer_entity(freezer_se) {
+		freezer_se->back = back;
+		back = freezer_se;
 	}
 
-	rt_nr_running = rt_rq_of_se(back)->rt_nr_running;
+	freezer_nr_running = freezer_rq_of_se(back)->frezer_nr_running;
 
-	for (rt_se = back; rt_se; rt_se = rt_se->back) {
-		if (on_rt_rq(rt_se))
-			__dequeue_rt_entity(rt_se, flags);
+	for (freezer_se = back; freezer_se; freezer_se = freezer_se->back) {
+		if (on_freezer_rq(freezer_se))
+			__dequeue_freezer_entity(freezer_se, flags);
 	}
 
-	dequeue_top_rt_rq(rt_rq_of_se(back), rt_nr_running);
+	dequeue_top_freezer_rq(freezer_rq_of_se(back), freezer_nr_running);
 }
 
-static void enqueue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flags)
+static void enqueue_freezer_entity(struct sched_freezer_entity *freezer_se, unsigned int flags)
 {
-	struct rq *rq = rq_of_rt_se(rt_se);
+	struct rq *rq = rq_of_freezer_se(freezer_se);
 
-	update_stats_enqueue_rt(rt_rq_of_se(rt_se), rt_se, flags);
+	update_stats_enqueue_freezer(freezer_rq_of_se(freezer_se), freezer_se, flags);
 
-	dequeue_rt_stack(rt_se, flags);
-	for_each_sched_rt_entity(rt_se)
-		__enqueue_rt_entity(rt_se, flags);
-	enqueue_top_rt_rq(&rq->rt);
+	dequeue_freezer_stack(freezer_se, flags);
+	for_each_sched_freezer_entity(freezer_se)
+		__enqueue_freezer_entity(freezer_se, flags);
+freezer(&rq->rt);
 }
 
-static void dequeue_rt_entity(struct sched_rt_entity *rt_se, unsigned int flags)
+static void dequeue_freezer_entity(struct sched_freezer_entity *freezer_se, unsigned int flags)
 {
-	struct rq *rq = rq_of_rt_se(rt_se);
+	struct rq *rq = rq_of_freezer_se(freezer_se);
 
-	update_stats_dequeue_rt(rt_rq_of_se(rt_se), rt_se, flags);
+	update_stats_dequeue_rt(freezer_rq_of_se(freezer_se), freezer_se, flags);
 
-	dequeue_rt_stack(rt_se, flags);
+	dequeue_freezer_stack(freezer_se, flags);
 
-	for_each_sched_rt_entity(rt_se) {
-		struct rt_rq *rt_rq = group_rt_rq(rt_se);
+	for_each_sched_freezer_entity(freezer_se) {
+		struct rt_rq *rt_rq = group_rt_rq(freezer_se);
 
-		if (rt_rq && rt_rq->rt_nr_running)
-			__enqueue_rt_entity(rt_se, flags);
+		if (rt_rq && rt_rq->freezer_nr_running)
+			__enqueue_freezer_entity(freezer_se, flags);
 	}
-	enqueue_top_rt_rq(&rq->rt);
+freezer(&rq->rt);
 }
 
 /*
  * Adding/removing a task to/from a priority array:
  */
 static void
-enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags)
+enqueue_task_freezer(struct rq *rq, struct task_struct *p, int flags)
 {
-	struct sched_rt_entity *rt_se = &p->rt;
+	struct sched_freezer_entity *freezer_se = &p->freezer;
 
 	if (flags & ENQUEUE_WAKEUP)
-		rt_se->timeout = 0;
+		freezer_se->timeout = 0;
 
 	check_schedstat_required();
-	update_stats_wait_start_rt(rt_rq_of_se(rt_se), rt_se);
+	update_stats_wait_start_freezer(freezer_rq_of_se(freezer_se), freezer_se);
 
-	enqueue_rt_entity(rt_se, flags);
+	enqueue_freezer_entity(freezer_se, flags);
 
 	if (!task_current(rq, p) && p->nr_cpus_allowed > 1)
 		enqueue_pushable_task(rq, p);
@@ -1267,40 +1053,40 @@ static void dequeue_task_freezer(struct rq *rq, struct task_struct *p, int flags
  * dequeue followed by enqueue.
  */
 static void
-requeue_rt_entity(struct rt_rq *rt_rq, struct sched_rt_entity *rt_se, int head)
+requeue_freezer_entity(struct freezer_rq *freezer_rq, struct sched_freezer_entity *freezer_se, int head)
 {
-	if (on_rt_rq(rt_se)) {
-		struct rt_prio_array *array = &rt_rq->active;
-		struct list_head *queue = array->queue + rt_se_prio(rt_se);
+	if (on_freezer_rq(freezer_se)) {
+		struct rt_prio_array *array = &freezer_rq->active;
+		struct list_head *queue = array->queue + freezer_se_prio(freezer_se);
 
 		if (head)
-			list_move(&rt_se->run_list, queue);
+			list_move(&freezer_se->run_list, queue);
 		else
-			list_move_tail(&rt_se->run_list, queue);
+			list_move_tail(&freezer_se->run_list, queue);
 	}
 }
 
-static void requeue_task_rt(struct rq *rq, struct task_struct *p, int head)
+static void requeue_task_freezer(struct rq *rq, struct task_struct *p, int head)
 {
-	struct sched_rt_entity *rt_se = &p->rt;
-	struct rt_rq *rt_rq;
+	struct sched_freezer_entity *freezer_se = &p->rt;
+	struct freezer_rq *freezer_rq;
 
-	for_each_sched_rt_entity(rt_se) {
-		rt_rq = rt_rq_of_se(rt_se);
-		requeue_rt_entity(rt_rq, rt_se, head);
+	for_each_sched_freezer_entity(freezer_se) {
+		freezer_rq = freezer_rq_of_se(freezer_se);
+		requeue_freezer_entity(freezer_rq, freezer_se, head);
 	}
 }
 
-static void yield_task_rt(struct rq *rq)
+static void yield_task_freezer(struct rq *rq)
 {
-	requeue_task_rt(rq, rq->curr, 0);
+	requeue_task_freezer(rq, rq->curr, 0);
 }
 
 #ifdef CONFIG_SMP
 static int find_lowest_rq(struct task_struct *task);
 
 static int
-select_task_rq_rt(struct task_struct *p, int cpu, int flags)
+select_task_rq_freezer(struct task_struct *p, int cpu, int flags)
 {
 	struct task_struct *curr;
 	struct rq *rq;
@@ -1342,7 +1128,7 @@ select_task_rq_rt(struct task_struct *p, int cpu, int flags)
 	 * systems like big.LITTLE.
 	 */
 	test = curr &&
-	       unlikely(rt_task(curr)) &&
+	       unlikely(freezer_task(curr)) &&
 	       (curr->nr_cpus_allowed < 2 || curr->prio <= p->prio);
 
 	if (test || !freezer_task_fits_capacity(p, cpu)) {
@@ -1398,59 +1184,60 @@ static void check_preempt_equal_prio(struct rq *rq, struct task_struct *p)
 	resched_curr(rq);
 }
 
+static int balance_freezer(struct rq *rq, struct task_struct *p, struct rq_flags *rf)
+{
+	if (!on_freezer_rq(&p->rt) && need_pull_freezer_task(rq, p)) {
+		/*
+		 * This is OK, because current is on_cpu, which avoids it being
+		 * picked for load-balance and preemption/IRQs are still
+		 * disabled avoiding further scheduler activity on it and we've
+		 * not yet started the picking loop.
+		 */
+		rq_unpin_lock(rq, rf);
+		pull_rt_task(rq);
+		rq_repin_lock(rq, rf);
+	}
+
+	return sched_stop_runnable(rq) || sched_dl_runnable(rq) || sched_rt_runnable(rq) || sched_freezer_runnable(rq);
+}
+#endif /* CONFIG_SMP */
 
 /*
- * freezer task scheduling class.
+ * Preempt the current task with a newly woken task if needed:
  */
-
-#ifdef CONFIG_SMP
-static int
-select_task_rq_freezer(struct task_struct *p, int cpu, int flags)
-{
-	return task_cpu(p);
-}
-
-static int
-balance_freezer(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
-{
-	return WARN_ON_ONCE(1);
-}
-#endif
-
 static void wakeup_preempt_freezer(struct rq *rq, struct task_struct *p, int flags)
 {
-	resched_curr(rq);
-}
+	if (p->prio < rq->curr->prio) {
+		resched_curr(rq);
+		return;
+	}
 
-static void put_prev_task_freezer(struct rq *rq, struct task_struct *prev)
-{
-	struct sched_freezer_entity *freezer_se = &p->freezer;
-	struct freezer_rq *freezer_rq = &rq->freezer;
-
-	if (on_freezer_rq(&p->freezer))
-		update_stats_wait_start_rt(freezer_rq, freezer_se);
-
-	update_curr_freezer(rq);
-
-	// TODO write freezer stat function
-	//update_rt_rq_load_avg(rq_clock_pelt(rq), rq, 1);
-
+#ifdef CONFIG_SMP
 	/*
-	 * The previous task needs to be made eligible for pushing
-	 * if it is still active
+	 * If:
+	 *
+	 * - the newly woken task is of equal priority to the current task
+	 * - the newly woken task is non-migratable while current is migratable
+	 * - current will be preempted on the next reschedule
+	 *
+	 * we should check to see if current can readily move to a different
+	 * cpu.  If so, we will reschedule to allow the push logic to try
+	 * to move current somewhere else, making room for our non-migratable
+	 * task.
 	 */
-	if (on_freezer_rq(&p->freezer) && p->nr_cpus_allowed > 1)
-		enqueue_pushable_task(rq, p);
+	if (p->prio == rq->curr->prio && !test_tsk_need_resched(rq->curr))
+		check_preempt_equal_prio(rq, p);
+#endif
 }
 
 static inline void set_next_task_freezer(struct rq *rq, struct task_struct *p, bool first)
 {
 	struct sched_freezer_entity *freezer_se = &p->freezer;
-	struct rt_rq *rt_rq = &rq->rt;
+	struct freezer_rq *freezer_rq = &rq->freezer;
 
 	p->se.exec_start = rq_clock_task(rq);
 	if (on_freezer_rq(&p->freezer))
-		update_stats_wait_end_rt(freezer_rq, freezer_se);
+		update_stats_wait_end_freezer(rt_rq, freezer_se);
 
 	/* The running task is never eligible for pushing */
 	dequeue_pushable_task(rq, p);
@@ -1469,10 +1256,10 @@ static inline void set_next_task_freezer(struct rq *rq, struct task_struct *p, b
 	rt_queue_push_tasks(rq);
 }
 
-static struct sched_rt_entity *pick_next_rt_entity(struct rt_rq *rt_rq)
+static struct sched_freezer_entity *pick_next_freezer_entity(struct rt_rq *rt_rq)
 {
 	struct rt_prio_array *array = &rt_rq->active;
-	struct sched_rt_entity *next = NULL;
+	struct sched_freezer_entity *next = NULL;
 	struct list_head *queue;
 	int idx;
 
@@ -1482,7 +1269,7 @@ static struct sched_rt_entity *pick_next_rt_entity(struct rt_rq *rt_rq)
 	queue = array->queue + idx;
 	if (SCHED_WARN_ON(list_empty(queue)))
 		return NULL;
-	next = list_entry(queue->next, struct sched_rt_entity, run_list);
+	next = list_entry(queue->next, struct sched_freezer_entity, run_list);
 
 	return next;
 }
@@ -1490,14 +1277,14 @@ static struct sched_rt_entity *pick_next_rt_entity(struct rt_rq *rt_rq)
 static struct task_struct *_pick_next_task_freezer(struct rq *rq)
 {
 	struct sched_freezer_entity *freezer_se;
-	struct freezer_rq *freezer_rq  = &rq->freezer;
+	struct rt_rq *rt_rq  = &rq->rt;
 
 	do {
-		freezer_se = pick_next_freezer_entity(freezer_rq);
+		freezer_se = pick_next_freezer_entity(rt_rq);
 		if (unlikely(!freezer_se))
 			return NULL;
-		freezer_rq = group_freezer_rq(freezer_se);
-	} while (freezer_rq);
+		rt_rq = group_rt_rq(freezer_se);
+	} while (rt_rq);
 
 	return freezer_task_of(freezer_se);
 }
@@ -1524,6 +1311,817 @@ static struct task_struct *pick_next_task_freezer(struct rq *rq)
 	return p;
 }
 
+static void put_prev_task_freezer(struct rq *rq, struct task_struct *p)
+{
+	struct sched_freezer_entity *freezer_se = &p->rt;
+	struct rt_rq *rt_rq = &rq->rt;
+
+	if (on_freezer_rq(&p->rt))
+		update_stats_wait_start_freezer(rt_rq, freezer_se);
+
+	update_curr_freezer(rq);
+
+	update_rt_rq_load_avg(rq_clock_pelt(rq), rq, 1);
+
+	/*
+	 * The previous task needs to be made eligible for pushing
+	 * if it is still active
+	 */
+	if (on_freezer_rq(&p->rt) && p->nr_cpus_allowed > 1)
+		enqueue_pushable_task(rq, p);
+}
+
+#ifdef CONFIG_SMP
+
+/* Only try algorithms three times */
+#define RT_MAX_TRIES 3
+
+static int pick_rt_task(struct rq *rq, struct task_struct *p, int cpu)
+{
+	if (!task_on_cpu(rq, p) &&
+	    cpumask_test_cpu(cpu, &p->cpus_mask))
+		return 1;
+
+	return 0;
+}
+
+/*
+ * Return the highest pushable rq's task, which is suitable to be executed
+ * on the CPU, NULL otherwise
+ */
+static struct task_struct *pick_highest_pushable_task(struct rq *rq, int cpu)
+{
+	struct plist_head *head = &rq->rt.pushable_tasks;
+	struct task_struct *p;
+
+	if (!has_pushable_tasks(rq))
+		return NULL;
+
+	plist_for_each_entry(p, head, pushable_tasks) {
+		if (pick_rt_task(rq, p, cpu))
+			return p;
+	}
+
+	return NULL;
+}
+
+static DEFINE_PER_CPU(cpumask_var_t, local_cpu_mask);
+
+static int find_lowest_rq(struct task_struct *task)
+{
+	struct sched_domain *sd;
+	struct cpumask *lowest_mask = this_cpu_cpumask_var_ptr(local_cpu_mask);
+	int this_cpu = smp_processor_id();
+	int cpu      = task_cpu(task);
+	int ret;
+
+	/* Make sure the mask is initialized first */
+	if (unlikely(!lowest_mask))
+		return -1;
+
+	if (task->nr_cpus_allowed == 1)
+		return -1; /* No other targets possible */
+
+	/*
+	 * If we're on asym system ensure we consider the different capacities
+	 * of the CPUs when searching for the lowest_mask.
+	 */
+	if (sched_asym_cpucap_active()) {
+
+		ret = cpupri_find_fitness(&task_rq(task)->rd->cpupri,
+					  task, lowest_mask,
+					  rt_task_fits_capacity);
+	} else {
+
+		ret = cpupri_find(&task_rq(task)->rd->cpupri,
+				  task, lowest_mask);
+	}
+
+	if (!ret)
+		return -1; /* No targets found */
+
+	/*
+	 * At this point we have built a mask of CPUs representing the
+	 * lowest priority tasks in the system.  Now we want to elect
+	 * the best one based on our affinity and topology.
+	 *
+	 * We prioritize the last CPU that the task executed on since
+	 * it is most likely cache-hot in that location.
+	 */
+	if (cpumask_test_cpu(cpu, lowest_mask))
+		return cpu;
+
+	/*
+	 * Otherwise, we consult the sched_domains span maps to figure
+	 * out which CPU is logically closest to our hot cache data.
+	 */
+	if (!cpumask_test_cpu(this_cpu, lowest_mask))
+		this_cpu = -1; /* Skip this_cpu opt if not among lowest */
+
+	rcu_read_lock();
+	for_each_domain(cpu, sd) {
+		if (sd->flags & SD_WAKE_AFFINE) {
+			int best_cpu;
+
+			/*
+			 * "this_cpu" is cheaper to preempt than a
+			 * remote processor.
+			 */
+			if (this_cpu != -1 &&
+			    cpumask_test_cpu(this_cpu, sched_domain_span(sd))) {
+				rcu_read_unlock();
+				return this_cpu;
+			}
+
+			best_cpu = cpumask_any_and_distribute(lowest_mask,
+							      sched_domain_span(sd));
+			if (best_cpu < nr_cpu_ids) {
+				rcu_read_unlock();
+				return best_cpu;
+			}
+		}
+	}
+	rcu_read_unlock();
+
+	/*
+	 * And finally, if there were no matches within the domains
+	 * just give the caller *something* to work with from the compatible
+	 * locations.
+	 */
+	if (this_cpu != -1)
+		return this_cpu;
+
+	cpu = cpumask_any_distribute(lowest_mask);
+	if (cpu < nr_cpu_ids)
+		return cpu;
+
+	return -1;
+}
+
+/* Will lock the rq it finds */
+static struct rq *find_lock_lowest_rq(struct task_struct *task, struct rq *rq)
+{
+	struct rq *lowest_rq = NULL;
+	int tries;
+	int cpu;
+
+	for (tries = 0; tries < RT_MAX_TRIES; tries++) {
+		cpu = find_lowest_rq(task);
+
+		if ((cpu == -1) || (cpu == rq->cpu))
+			break;
+
+		lowest_rq = cpu_rq(cpu);
+
+		if (lowest_rq->rt.highest_prio.curr <= task->prio) {
+			/*
+			 * Target rq has tasks of equal or higher priority,
+			 * retrying does not release any lock and is unlikely
+			 * to yield a different result.
+			 */
+			lowest_rq = NULL;
+			break;
+		}
+
+		/* if the prio of this runqueue changed, try again */
+		if (double_lock_balance(rq, lowest_rq)) {
+			/*
+			 * We had to unlock the run queue. In
+			 * the mean time, task could have
+			 * migrated already or had its affinity changed.
+			 * Also make sure that it wasn't scheduled on its rq.
+			 * It is possible the task was scheduled, set
+			 * "migrate_disabled" and then got preempted, so we must
+			 * check the task migration disable flag here too.
+			 */
+			if (unlikely(task_rq(task) != rq ||
+				     !cpumask_test_cpu(lowest_rq->cpu, &task->cpus_mask) ||
+				     task_on_cpu(rq, task) ||
+				     !freezer_task(task) ||
+				     is_migration_disabled(task) ||
+				     !task_on_rq_queued(task))) {
+
+				double_unlock_balance(rq, lowest_rq);
+				lowest_rq = NULL;
+				break;
+			}
+		}
+
+		/* If this rq is still suitable use it. */
+		if (lowest_rq->rt.highest_prio.curr > task->prio)
+			break;
+
+		/* try again */
+		double_unlock_balance(rq, lowest_rq);
+		lowest_rq = NULL;
+	}
+
+	return lowest_rq;
+}
+
+static struct task_struct *pick_next_pushable_task(struct rq *rq)
+{
+	struct task_struct *p;
+
+	if (!has_pushable_tasks(rq))
+		return NULL;
+
+	p = plist_first_entry(&rq->rt.pushable_tasks,
+			      struct task_struct, pushable_tasks);
+
+	BUG_ON(rq->cpu != task_cpu(p));
+	BUG_ON(task_current(rq, p));
+	BUG_ON(p->nr_cpus_allowed <= 1);
+
+	BUG_ON(!task_on_rq_queued(p));
+	BUG_ON(!freezer_task(p));
+
+	return p;
+}
+
+/*
+ * If the current CPU has more than one RT task, see if the non
+ * running task can migrate over to a CPU that is running a task
+ * of lesser priority.
+ */
+static int push_rt_task(struct rq *rq, bool pull)
+{
+	struct task_struct *next_task;
+	struct rq *lowest_rq;
+	int ret = 0;
+
+	if (!rq->rt.overloaded)
+		return 0;
+
+	next_task = pick_next_pushable_task(rq);
+	if (!next_task)
+		return 0;
+
+retry:
+	/*
+	 * It's possible that the next_task slipped in of
+	 * higher priority than current. If that's the case
+	 * just reschedule current.
+	 */
+	if (unlikely(next_task->prio < rq->curr->prio)) {
+		resched_curr(rq);
+		return 0;
+	}
+
+	if (is_migration_disabled(next_task)) {
+		struct task_struct *push_task = NULL;
+		int cpu;
+
+		if (!pull || rq->push_busy)
+			return 0;
+
+		/*
+		 * Invoking find_lowest_rq() on anything but an RT task doesn't
+		 * make sense. Per the above priority check, curr has to
+		 * be of higher priority than next_task, so no need to
+		 * reschedule when bailing out.
+		 *
+		 * Note that the stoppers are masqueraded as SCHED_FIFO
+		 * (cf. sched_set_stop_task()), so we can't rely on freezer_task().
+		 */
+		if (rq->curr->sched_class != &rt_sched_class)
+			return 0;
+
+		cpu = find_lowest_rq(rq->curr);
+		if (cpu == -1 || cpu == rq->cpu)
+			return 0;
+
+		/*
+		 * Given we found a CPU with lower priority than @next_task,
+		 * therefore it should be running. However we cannot migrate it
+		 * to this other CPU, instead attempt to push the current
+		 * running task on this CPU away.
+		 */
+		push_task = get_push_task(rq);
+		if (push_task) {
+			preempt_disable();
+			raw_spin_rq_unlock(rq);
+			stop_one_cpu_nowait(rq->cpu, push_cpu_stop,
+					    push_task, &rq->push_work);
+			preempt_enable();
+			raw_spin_rq_lock(rq);
+		}
+
+		return 0;
+	}
+
+	if (WARN_ON(next_task == rq->curr))
+		return 0;
+
+	/* We might release rq lock */
+	get_task_struct(next_task);
+
+	/* find_lock_lowest_rq locks the rq if found */
+	lowest_rq = find_lock_lowest_rq(next_task, rq);
+	if (!lowest_rq) {
+		struct task_struct *task;
+		/*
+		 * find_lock_lowest_rq releases rq->lock
+		 * so it is possible that next_task has migrated.
+		 *
+		 * We need to make sure that the task is still on the same
+		 * run-queue and is also still the next task eligible for
+		 * pushing.
+		 */
+		task = pick_next_pushable_task(rq);
+		if (task == next_task) {
+			/*
+			 * The task hasn't migrated, and is still the next
+			 * eligible task, but we failed to find a run-queue
+			 * to push it to.  Do not retry in this case, since
+			 * other CPUs will pull from us when ready.
+			 */
+			goto out;
+		}
+
+		if (!task)
+			/* No more tasks, just exit */
+			goto out;
+
+		/*
+		 * Something has shifted, try again.
+		 */
+		put_task_struct(next_task);
+		next_task = task;
+		goto retry;
+	}
+
+	deactivate_task(rq, next_task, 0);
+	set_task_cpu(next_task, lowest_rq->cpu);
+	activate_task(lowest_rq, next_task, 0);
+	resched_curr(lowest_rq);
+	ret = 1;
+
+	double_unlock_balance(rq, lowest_rq);
+out:
+	put_task_struct(next_task);
+
+	return ret;
+}
+
+static void push_rt_tasks(struct rq *rq)
+{
+	/* push_rt_task will return true if it moved an RT */
+	while (push_rt_task(rq, false))
+		;
+}
+
+#ifdef HAVE_RT_PUSH_IPI
+
+/*
+ * When a high priority task schedules out from a CPU and a lower priority
+ * task is scheduled in, a check is made to see if there's any RT tasks
+ * on other CPUs that are waiting to run because a higher priority RT task
+ * is currently running on its CPU. In this case, the CPU with multiple RT
+ * tasks queued on it (overloaded) needs to be notified that a CPU has opened
+ * up that may be able to run one of its non-running queued RT tasks.
+ *
+ * All CPUs with overloaded RT tasks need to be notified as there is currently
+ * no way to know which of these CPUs have the highest priority task waiting
+ * to run. Instead of trying to take a spinlock on each of these CPUs,
+ * which has shown to cause large latency when done on machines with many
+ * CPUs, sending an IPI to the CPUs to have them push off the overloaded
+ * RT tasks waiting to run.
+ *
+ * Just sending an IPI to each of the CPUs is also an issue, as on large
+ * count CPU machines, this can cause an IPI storm on a CPU, especially
+ * if its the only CPU with multiple RT tasks queued, and a large number
+ * of CPUs scheduling a lower priority task at the same time.
+ *
+ * Each root domain has its own irq work function that can iterate over
+ * all CPUs with RT overloaded tasks. Since all CPUs with overloaded RT
+ * task must be checked if there's one or many CPUs that are lowering
+ * their priority, there's a single irq work iterator that will try to
+ * push off RT tasks that are waiting to run.
+ *
+ * When a CPU schedules a lower priority task, it will kick off the
+ * irq work iterator that will jump to each CPU with overloaded RT tasks.
+ * As it only takes the first CPU that schedules a lower priority task
+ * to start the process, the rto_start variable is incremented and if
+ * the atomic result is one, then that CPU will try to take the rto_lock.
+ * This prevents high contention on the lock as the process handles all
+ * CPUs scheduling lower priority tasks.
+ *
+ * All CPUs that are scheduling a lower priority task will increment the
+ * rt_loop_next variable. This will make sure that the irq work iterator
+ * checks all RT overloaded CPUs whenever a CPU schedules a new lower
+ * priority task, even if the iterator is in the middle of a scan. Incrementing
+ * the rt_loop_next will cause the iterator to perform another scan.
+ *
+ */
+static int rto_next_cpu(struct root_domain *rd)
+{
+	int next;
+	int cpu;
+
+	/*
+	 * When starting the IPI RT pushing, the rto_cpu is set to -1,
+	 * rt_next_cpu() will simply return the first CPU found in
+	 * the rto_mask.
+	 *
+	 * If rto_next_cpu() is called with rto_cpu is a valid CPU, it
+	 * will return the next CPU found in the rto_mask.
+	 *
+	 * If there are no more CPUs left in the rto_mask, then a check is made
+	 * against rto_loop and rto_loop_next. rto_loop is only updated with
+	 * the rto_lock held, but any CPU may increment the rto_loop_next
+	 * without any locking.
+	 */
+	for (;;) {
+
+		/* When rto_cpu is -1 this acts like cpumask_first() */
+		cpu = cpumask_next(rd->rto_cpu, rd->rto_mask);
+
+		rd->rto_cpu = cpu;
+
+		if (cpu < nr_cpu_ids)
+			return cpu;
+
+		rd->rto_cpu = -1;
+
+		/*
+		 * ACQUIRE ensures we see the @rto_mask changes
+		 * made prior to the @next value observed.
+		 *
+		 * Matches WMB in freezer_set_overload().
+		 */
+		next = atomic_read_acquire(&rd->rto_loop_next);
+
+		if (rd->rto_loop == next)
+			break;
+
+		rd->rto_loop = next;
+	}
+
+	return -1;
+}
+
+static inline bool rto_start_trylock(atomic_t *v)
+{
+	return !atomic_cmpxchg_acquire(v, 0, 1);
+}
+
+static inline void rto_start_unlock(atomic_t *v)
+{
+	atomic_set_release(v, 0);
+}
+
+static void tell_cpu_to_push(struct rq *rq)
+{
+	int cpu = -1;
+
+	/* Keep the loop going if the IPI is currently active */
+	atomic_inc(&rq->rd->rto_loop_next);
+
+	/* Only one CPU can initiate a loop at a time */
+	if (!rto_start_trylock(&rq->rd->rto_loop_start))
+		return;
+
+	raw_spin_lock(&rq->rd->rto_lock);
+
+	/*
+	 * The rto_cpu is updated under the lock, if it has a valid CPU
+	 * then the IPI is still running and will continue due to the
+	 * update to loop_next, and nothing needs to be done here.
+	 * Otherwise it is finishing up and an ipi needs to be sent.
+	 */
+	if (rq->rd->rto_cpu < 0)
+		cpu = rto_next_cpu(rq->rd);
+
+	raw_spin_unlock(&rq->rd->rto_lock);
+
+	rto_start_unlock(&rq->rd->rto_loop_start);
+
+	if (cpu >= 0) {
+		/* Make sure the rd does not get freed while pushing */
+		sched_get_rd(rq->rd);
+		irq_work_queue_on(&rq->rd->rto_push_work, cpu);
+	}
+}
+
+/* Called from hardirq context */
+void rto_push_irq_work_func(struct irq_work *work)
+{
+	struct root_domain *rd =
+		container_of(work, struct root_domain, rto_push_work);
+	struct rq *rq;
+	int cpu;
+
+	rq = this_rq();
+
+	/*
+	 * We do not need to grab the lock to check for has_pushable_tasks.
+	 * When it gets updated, a check is made if a push is possible.
+	 */
+	if (has_pushable_tasks(rq)) {
+		raw_spin_rq_lock(rq);
+		while (push_rt_task(rq, true))
+			;
+		raw_spin_rq_unlock(rq);
+	}
+
+	raw_spin_lock(&rd->rto_lock);
+
+	/* Pass the IPI to the next rt overloaded queue */
+	cpu = rto_next_cpu(rd);
+
+	raw_spin_unlock(&rd->rto_lock);
+
+	if (cpu < 0) {
+		sched_put_rd(rd);
+		return;
+	}
+
+	/* Try the next RT overloaded CPU */
+	irq_work_queue_on(&rd->rto_push_work, cpu);
+}
+#endif /* HAVE_RT_PUSH_IPI */
+
+static void pull_rt_task(struct rq *this_rq)
+{
+	int this_cpu = this_rq->cpu, cpu;
+	bool resched = false;
+	struct task_struct *p, *push_task;
+	struct rq *src_rq;
+	int rt_overload_count = rt_overloaded(this_rq);
+
+	if (likely(!rt_overload_count))
+		return;
+
+	/*
+	 * Match the barrier from freezer_set_overloaded; this guarantees that if we
+	 * see overloaded we must also see the rto_mask bit.
+	 */
+	smp_rmb();
+
+	/* If we are the only overloaded CPU do nothing */
+	if (rt_overload_count == 1 &&
+	    cpumask_test_cpu(this_rq->cpu, this_rq->rd->rto_mask))
+		return;
+
+#ifdef HAVE_RT_PUSH_IPI
+	if (sched_feat(RT_PUSH_IPI)) {
+		tell_cpu_to_push(this_rq);
+		return;
+	}
+#endif
+
+	for_each_cpu(cpu, this_rq->rd->rto_mask) {
+		if (this_cpu == cpu)
+			continue;
+
+		src_rq = cpu_rq(cpu);
+
+		/*
+		 * Don't bother taking the src_rq->lock if the next highest
+		 * task is known to be lower-priority than our current task.
+		 * This may look racy, but if this value is about to go
+		 * logically higher, the src_rq will push this task away.
+		 * And if its going logically lower, we do not care
+		 */
+		if (src_rq->rt.highest_prio.next >=
+		    this_rq->rt.highest_prio.curr)
+			continue;
+
+		/*
+		 * We can potentially drop this_rq's lock in
+		 * double_lock_balance, and another CPU could
+		 * alter this_rq
+		 */
+		push_task = NULL;
+		double_lock_balance(this_rq, src_rq);
+
+		/*
+		 * We can pull only a task, which is pushable
+		 * on its rq, and no others.
+		 */
+		p = pick_highest_pushable_task(src_rq, this_cpu);
+
+		/*
+		 * Do we have an RT task that preempts
+		 * the to-be-scheduled task?
+		 */
+		if (p && (p->prio < this_rq->rt.highest_prio.curr)) {
+			WARN_ON(p == src_rq->curr);
+			WARN_ON(!task_on_rq_queued(p));
+
+			/*
+			 * There's a chance that p is higher in priority
+			 * than what's currently running on its CPU.
+			 * This is just that p is waking up and hasn't
+			 * had a chance to schedule. We only pull
+			 * p if it is lower in priority than the
+			 * current task on the run queue
+			 */
+			if (p->prio < src_rq->curr->prio)
+				goto skip;
+
+			if (is_migration_disabled(p)) {
+				push_task = get_push_task(src_rq);
+			} else {
+				deactivate_task(src_rq, p, 0);
+				set_task_cpu(p, this_cpu);
+				activate_task(this_rq, p, 0);
+				resched = true;
+			}
+			/*
+			 * We continue with the search, just in
+			 * case there's an even higher prio task
+			 * in another runqueue. (low likelihood
+			 * but possible)
+			 */
+		}
+skip:
+		double_unlock_balance(this_rq, src_rq);
+
+		if (push_task) {
+			preempt_disable();
+			raw_spin_rq_unlock(this_rq);
+			stop_one_cpu_nowait(src_rq->cpu, push_cpu_stop,
+					    push_task, &src_rq->push_work);
+			preempt_enable();
+			raw_spin_rq_lock(this_rq);
+		}
+	}
+
+	if (resched)
+		resched_curr(this_rq);
+}
+
+/*
+ * If we are not running and we are not going to reschedule soon, we should
+ * try to push tasks away now
+ */
+static void task_woken_freezer(struct rq *rq, struct task_struct *p)
+{
+	bool need_to_push = !task_on_cpu(rq, p) &&
+			    !test_tsk_need_resched(rq->curr) &&
+			    p->nr_cpus_allowed > 1 &&
+			    (dl_task(rq->curr) || freezer_task(rq->curr)) &&
+			    (rq->curr->nr_cpus_allowed < 2 ||
+			     rq->curr->prio <= p->prio);
+
+	if (need_to_push)
+		push_rt_tasks(rq);
+}
+
+/* Assumes rq->lock is held */
+static void rq_online_freezer(struct rq *rq)
+{
+	if (rq->rt.overloaded)
+		freezer_set_overload(rq);
+
+	__enable_runtime(rq);
+
+	cpupri_set(&rq->rd->cpupri, rq->cpu, rq->rt.highest_prio.curr);
+}
+
+/* Assumes rq->lock is held */
+static void rq_offline_freezer(struct rq *rq)
+{
+	if (rq->rt.overloaded)
+		rt_clear_overload(rq);
+
+	__disable_runtime(rq);
+
+	cpupri_set(&rq->rd->cpupri, rq->cpu, CPUPRI_INVALID);
+}
+
+/*
+ * When switch from the rt queue, we bring ourselves to a position
+ * that we might want to pull RT tasks from other runqueues.
+ */
+static void switched_from_freezer(struct rq *rq, struct task_struct *p)
+{
+	/*
+	 * If there are other RT tasks then we will reschedule
+	 * and the scheduling of the other RT tasks will handle
+	 * the balancing. But if we are the last RT task
+	 * we may need to handle the pulling of RT tasks
+	 * now.
+	 */
+	if (!task_on_rq_queued(p) || rq->rt.freezer_nr_running)
+		return;
+
+	rt_queue_pull_task(rq);
+}
+
+void __init init_sched_rt_class(void)
+{
+	unsigned int i;
+
+	for_each_possible_cpu(i) {
+		zalloc_cpumask_var_node(&per_cpu(local_cpu_mask, i),
+					GFP_KERNEL, cpu_to_node(i));
+	}
+}
+#endif /* CONFIG_SMP */
+
+/*
+ * When switching a task to RT, we may overload the runqueue
+ * with RT tasks. In this case we try to push them off to
+ * other runqueues.
+ */
+static void switched_to_freezer(struct rq *rq, struct task_struct *p)
+{
+	/*
+	 * If we are running, update the avg_rt tracking, as the running time
+	 * will now on be accounted into the latter.
+	 */
+	if (task_current(rq, p)) {
+		update_rt_rq_load_avg(rq_clock_pelt(rq), rq, 0);
+		return;
+	}
+
+	/*
+	 * If we are not running we may need to preempt the current
+	 * running task. If that current running task is also an RT task
+	 * then see if we can move to another run queue.
+	 */
+	if (task_on_rq_queued(p)) {
+#ifdef CONFIG_SMP
+		if (p->nr_cpus_allowed > 1 && rq->rt.overloaded)
+			rt_queue_push_tasks(rq);
+#endif /* CONFIG_SMP */
+		if (p->prio < rq->curr->prio && cpu_online(cpu_of(rq)))
+			resched_curr(rq);
+	}
+}
+
+/*
+ * Priority of the task has changed. This may cause
+ * us to initiate a push or pull.
+ */
+static void
+prio_changed_freezer(struct rq *rq, struct task_struct *p, int oldprio)
+{
+	if (!task_on_rq_queued(p))
+		return;
+
+	if (task_current(rq, p)) {
+#ifdef CONFIG_SMP
+		/*
+		 * If our priority decreases while running, we
+		 * may need to pull tasks to this runqueue.
+		 */
+		if (oldprio < p->prio)
+			rt_queue_pull_task(rq);
+
+		/*
+		 * If there's a higher priority task waiting to run
+		 * then reschedule.
+		 */
+		if (p->prio > rq->rt.highest_prio.curr)
+			resched_curr(rq);
+#else
+		/* For UP simply resched on drop of prio */
+		if (oldprio < p->prio)
+			resched_curr(rq);
+#endif /* CONFIG_SMP */
+	} else {
+		/*
+		 * This task is not running, but if it is
+		 * greater than the current running task
+		 * then reschedule.
+		 */
+		if (p->prio < rq->curr->prio)
+			resched_curr(rq);
+	}
+}
+
+#ifdef CONFIG_POSIX_TIMERS
+static void watchdog(struct rq *rq, struct task_struct *p)
+{
+	unsigned long soft, hard;
+
+	/* max may change after cur was read, this will be fixed next tick */
+	soft = task_rlimit(p, RLIMIT_RTTIME);
+	hard = task_rlimit_max(p, RLIMIT_RTTIME);
+
+	if (soft != RLIM_INFINITY) {
+		unsigned long next;
+
+		if (p->freezer.watchdog_stamp != jiffies) {
+			p->freezer.timeout++;
+			p->freezer.watchdog_stamp = jiffies;
+		}
+
+		next = DIV_ROUND_UP(min(soft, hard), USEC_PER_SEC/HZ);
+		if (p->freezer.timeout > next) {
+			posix_cputimers_rt_watchdog(&p->posix_cputimers,
+						    p->se.sum_exec_runtime);
+		}
+	}
+}
+#else
+static inline void watchdog(struct rq *rq, struct task_struct *p) { }
+#endif
+
 /*
  * scheduler tick hitting a task of our scheduling class.
  *
@@ -1534,7 +2132,7 @@ static struct task_struct *pick_next_task_freezer(struct rq *rq)
  */
 static void task_tick_freezer(struct rq *rq, struct task_struct *curr, int queued)
 {
-	struct sched_rt_entity *rt_se = &p->rt;
+	struct sched_freezer_entity *freezer_se = &p->freezer;
 
 	update_curr_freezer(rq);
 	// TODO freezer stats
@@ -1545,30 +2143,19 @@ static void task_tick_freezer(struct rq *rq, struct task_struct *curr, int queue
 	if (--p->freezer.time_slice)
 		return;
 
-	p->freezer.time_slice = sched_rr_timeslice;
+	p->freezer.time_slice = sched_freezer_timeslice;
 
 	/*
 	 * Requeue to the end of queue if we (and all of our ancestors) are not
 	 * the only element on the queue
 	 */
-	for_each_sched_rt_entity(rt_se) {
-		if (freezer_se->run_list.prev != rt_se->run_list.next) {
-			requeue_task_rt(rq, p, 0);
+	for_each_sched_freezer_entity(freezer_se) {
+		if (freezer_se->run_list.prev != freezer_se->run_list.next) {
+			requeue_task_freezer(rq, p, 0);
 			resched_curr(rq);
 			return;
 		}
 	}
-}
-
-static void switched_to_freezer(struct rq *rq, struct task_struct *p)
-{
-	BUG();
-}
-
-static void
-prio_changed_freezer(struct rq *rq, struct task_struct *p, int oldprio)
-{
-	BUG();
 }
 
 static unsigned int get_rr_interval_freezer(struct rq *rq, struct task_struct *task)
@@ -1587,39 +2174,169 @@ static int task_is_throttled_freezer(struct task_struct *p, int cpu)
 	freezer_rq = &cpu_rq(cpu)->freezer;
 #endif
 
-	return rt_rq_throttled(rt_rq);
+	return freezer_rq_throttled(freezer_rq);
 }
 #endif
 
 
-/*
- * Freezer scheduling policy implementation
- */
-DEFINE_SCHED_CLASS(freezer_sched_class) = {
+DEFINE_SCHED_CLASS(freezer) = {
 
-	/* TODO enqueue/yield */
-
-	/* dequeue is not valid, we print a debug message there: */
+	.enqueue_task		= enqueue_task_freezer,
 	.dequeue_task		= dequeue_task_freezer,
+	.yield_task		= yield_task_freezer,
 
 	.wakeup_preempt		= wakeup_preempt_freezer,
 
 	.pick_next_task		= pick_next_task_freezer,
-	.put_prev_task		= put_prev_task_freezer
-,
-	.set_next_task          = set_next_task_freezer
-,
+	.put_prev_task		= put_prev_task_freezer,
+	.set_next_task          = set_next_task_freezer,
 
 #ifdef CONFIG_SMP
 	.balance		= balance_freezer,
 	.pick_task		= pick_task_freezer,
 	.select_task_rq		= select_task_rq_freezer,
-	.set_cpus_allowed	= set_cpus_allowed_common,
+	.set_cpus_allowed       = set_cpus_allowed_common,
+	.rq_online              = rq_online_freezer,
+	.rq_offline             = rq_offline_freezer,
+	.task_woken		= task_woken_freezer,
+	.switched_from		= switched_from_freezer,
+	.find_lock_rq		= find_lock_lowest_rq,
 #endif
 
 	.task_tick		= task_tick_freezer,
 
+	.get_rr_interval	= get_rr_interval_freezer,
+
 	.prio_changed		= prio_changed_freezer,
 	.switched_to		= switched_to_freezer,
+
 	.update_curr		= update_curr_freezer,
+
+#ifdef CONFIG_SCHED_CORE
+	.task_is_throttled	= task_is_throttled_freezer,
+#endif
+
+#ifdef CONFIG_UCLAMP_TASK
+	.uclamp_enabled		= 1,
+#endif
 };
+
+#ifdef CONFIG_SYSCTL
+static int sched_freezer_global_constraints(void)
+{
+	unsigned long flags;
+	int i;
+
+	raw_spin_lock_irqsave(&def_rt_bandwidth.rt_runtime_lock, flags);
+	for_each_possible_cpu(i) {
+		struct rt_rq *rt_rq = &cpu_rq(i)->rt;
+
+		raw_spin_lock(&rt_rq->rt_runtime_lock);
+		rt_rq->rt_runtime = global_rt_runtime();
+		raw_spin_unlock(&rt_rq->rt_runtime_lock);
+	}
+	raw_spin_unlock_irqrestore(&def_rt_bandwidth.rt_runtime_lock, flags);
+
+	return 0;
+}
+#endif /* CONFIG_SYSCTL */
+
+#ifdef CONFIG_SYSCTL
+static int sched_rt_global_validate(void)
+{
+	if ((sysctl_sched_rt_runtime != RUNTIME_INF) &&
+		((sysctl_sched_rt_runtime > sysctl_sched_rt_period) ||
+		 ((u64)sysctl_sched_rt_runtime *
+			NSEC_PER_USEC > max_rt_runtime)))
+		return -EINVAL;
+
+	return 0;
+}
+
+static void sched_rt_do_global(void)
+{
+	unsigned long flags;
+
+	raw_spin_lock_irqsave(&def_rt_bandwidth.rt_runtime_lock, flags);
+	def_rt_bandwidth.rt_runtime = global_rt_runtime();
+	def_rt_bandwidth.rt_period = ns_to_ktime(global_rt_period());
+	raw_spin_unlock_irqrestore(&def_rt_bandwidth.rt_runtime_lock, flags);
+}
+
+static int sched_freezer_handler(struct ctl_table *table, int write, void *buffer,
+		size_t *lenp, loff_t *ppos)
+{
+	int old_period, old_runtime;
+	static DEFINE_MUTEX(mutex);
+	int ret;
+
+	mutex_lock(&mutex);
+	old_period = sysctl_sched_rt_period;
+	old_runtime = sysctl_sched_rt_runtime;
+
+	ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
+
+	if (!ret && write) {
+		ret = sched_rt_global_validate();
+		if (ret)
+			goto undo;
+
+		ret = sched_dl_global_validate();
+		if (ret)
+			goto undo;
+
+		ret = sched_freezer_global_constraints();
+		if (ret)
+			goto undo;
+
+		sched_rt_do_global();
+		sched_dl_do_global();
+	}
+	if (0) {
+undo:
+		sysctl_sched_rt_period = old_period;
+		sysctl_sched_rt_runtime = old_runtime;
+	}
+	mutex_unlock(&mutex);
+
+	return ret;
+}
+
+static int sched_rr_handler(struct ctl_table *table, int write, void *buffer,
+		size_t *lenp, loff_t *ppos)
+{
+	int ret;
+	static DEFINE_MUTEX(mutex);
+
+	mutex_lock(&mutex);
+	ret = proc_dointvec(table, write, buffer, lenp, ppos);
+	/*
+	 * Make sure that internally we keep jiffies.
+	 * Also, writing zero resets the timeslice to default:
+	 */
+	if (!ret && write) {
+		sched_rr_timeslice =
+			sysctl_sched_rr_timeslice <= 0 ? RR_TIMESLICE :
+			msecs_to_jiffies(sysctl_sched_rr_timeslice);
+
+		if (sysctl_sched_rr_timeslice <= 0)
+			sysctl_sched_rr_timeslice = jiffies_to_msecs(RR_TIMESLICE);
+	}
+	mutex_unlock(&mutex);
+
+	return ret;
+}
+#endif /* CONFIG_SYSCTL */
+
+#ifdef CONFIG_SCHED_DEBUG
+void print_rt_stats(struct seq_file *m, int cpu)
+{
+	rt_rq_iter_t iter;
+	struct rt_rq *rt_rq;
+
+	rcu_read_lock();
+	for_each_rt_rq(rt_rq, iter, cpu_rq(cpu))
+		print_rt_rq(m, cpu, rt_rq);
+	rcu_read_unlock();
+}
+#endif /* CONFIG_SCHED_DEBUG */
