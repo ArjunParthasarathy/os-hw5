@@ -3,13 +3,125 @@
 */
 int sched_freezer_timeslice = FREEZER_TIMESLICE;
 
+struct freezer_bandwidth def_freezer_bandwidth;
+
+/* copied from RT
+ * period over which we measure -rt task CPU usage in us.
+ * default: 1s
+ */
+int sysctl_sched_freezer_period = 1000000;
+
+/* copied from RT
+ * part of the period that we allow rt tasks to run in us.
+ * default: 0.95s
+ */
+int sysctl_sched_freezer_runtime = 950000;
+
+#ifdef CONFIG_SYSCTL
+static int sysctl_sched_freezer_timeslice = (MSEC_PER_SEC * FREEZER_TIMESLICE) / HZ;
+static int sched_freezer_handler(struct ctl_table *table, int write, void *buffer,
+		size_t *lenp, loff_t *ppos);
+static struct ctl_table sched_freezer_sysctls[] = {
+	{
+		.procname       = "sched_freezer_period_us",
+		.data           = &sysctl_sched_freezer_period,
+		.maxlen         = sizeof(int),
+		.mode           = 0644,
+		.proc_handler   = sched_freezer_handler,
+		.extra1         = SYSCTL_ONE,
+		.extra2         = SYSCTL_INT_MAX,
+	},
+	{
+		.procname       = "sched_freezer_runtime_us",
+		.data           = &sysctl_sched_freezer_runtime,
+		.maxlen         = sizeof(int),
+		.mode           = 0644,
+		.proc_handler   = sched_freezer_handler,
+		.extra1         = SYSCTL_NEG_ONE,
+		.extra2         = (void *)&sysctl_sched_freezer_period,
+	},
+	{}
+};
+
+static int __init sched_freezer_sysctl_init(void)
+{
+	register_sysctl_init("kernel", sched_freezer_sysctls);
+	return 0;
+}
+late_initcall(sched_freezer_sysctl_init);
+#endif
+
+static enum hrtimer_restart sched_freezer_period_timer(struct hrtimer *timer)
+{
+	struct freezer_bandwidth *freezer_b =
+		container_of(timer, struct freezer_bandwidth, freezer_period_timer);
+	int idle = 0;
+	int overrun;
+
+	raw_spin_lock(&freezer_b->freezer_runtime_lock);
+	for (;;) {
+		overrun = hrtimer_forward_now(timer, freezer_b->freezer_period);
+		if (!overrun)
+			break;
+
+		raw_spin_unlock(&freezer_b->freezer_runtime_lock);
+		idle = do_sched_freezer_period_timer(freezer_b, overrun);
+		raw_spin_lock(&freezer_b->freezer_runtime_lock);
+	}
+	if (idle)
+		freezer_b->freezer_period_active = 0;
+	raw_spin_unlock(&freezer_b->freezer_runtime_lock);
+
+	return idle ? HRTIMER_NORESTART : HRTIMER_RESTART;
+}
+
+void init_freezer_bandwidth(struct freezer_bandwidth *freezer_b, u64 period, u64 runtime)
+{
+	freezer_b->freezer_period = ns_to_ktime(period);
+	freezer_b->freezer_runtime = runtime;
+
+	raw_spin_lock_init(&freezer_b->freezer_runtime_lock);
+
+	hrtimer_init(&freezer_b->freezer_period_timer, CLOCK_MONOTONIC,
+		     HRTIMER_MODE_REL_HARD);
+	freezer_b->freezer_period_timer.function = sched_freezer_period_timer;
+}
+
+static inline void do_start_freezer_bandwidth(struct freezer_bandwidth *freezer_b)
+{
+	raw_spin_lock(&freezer_b->freezer_runtime_lock);
+	if (!freezer_b->freezer_period_active) {
+		freezer_b->freezer_period_active = 1;
+		/*
+		 * SCHED_DEADLINE updates the bandwidth, as a run away
+		 * RT task with a DL task could hog a CPU. But DL does
+		 * not reset the period. If a deadline task was running
+		 * without an RT task running, it can cause RT tasks to
+		 * throttle when they start up. Kick the timer right away
+		 * to update the period.
+		 */
+		hrtimer_forward_now(&freezer_b->freezer_period_timer, ns_to_ktime(0));
+		hrtimer_start_expires(&freezer_b->freezer_period_timer,
+				      HRTIMER_MODE_ABS_PINNED_HARD);
+	}
+	raw_spin_unlock(&freezer_b->freezer_runtime_lock);
+}
+
+static void start_freezer_bandwidth(struct freezer_bandwidth *freezer_b)
+{
+	if (!freezer_bandwidth_enabled() || freezer_b->freezer_runtime == RUNTIME_INF)
+		return;
+
+	do_start_freezer_bandwidth(freezer_b);
+}
+
 void init_freezer_rq(struct freezer_rq *freezer_rq)
 {
-	struct rt_prio_array *array;
+	struct freezer_prio_array *array;
 	int i;
 
 	array = &freezer_rq->active;
-	for (i = MAX_RT_PRIO; i < MAX_FREEZER_PRIO; i++) {
+	for (i = MAX_freezer_PRIO; i < MAX_FREEZER_PRIO; i++) {
 		INIT_LIST_HEAD(array->queue + i);
 		__clear_bit(i, array->bitmap);
 	}
@@ -22,7 +134,7 @@ void init_freezer_rq(struct freezer_rq *freezer_rq)
 	freezer_rq->overloaded = 0;
 	plist_head_init(&freezer_rq->pushable_tasks);
 #endif /* CONFIG_SMP */
-	/* We start is dequeued state, because no RT tasks are queued */
+	/* We start at dequeued state, because no freezer tasks are queued */
 	freezer_rq->freezer_queued = 0;
 
 	freezer_rq->freezer_time = 0;
@@ -33,7 +145,7 @@ void init_freezer_rq(struct freezer_rq *freezer_rq)
 
 /* No group scheduling so don't need that part of RT */
 
-#define rt_entity_is_task(freezer_se) (1)
+#define freezer_entity_is_task(freezer_se) (1)
 
 static inline struct task_struct *freezer_task_of(struct sched_freezer_entity *freezer_se)
 {
@@ -59,11 +171,11 @@ static inline struct freezer_rq *freezer_rq_of_se(struct sched_freezer_entity *f
 	return &rq->freezer;
 }
 
-void unregister_rt_sched_group(struct task_group *tg) { }
+void unregister_freezer_sched_group(struct task_group *tg) { }
 
-void free_rt_sched_group(struct task_group *tg) { }
+void free_freezer_sched_group(struct task_group *tg) { }
 
-int alloc_rt_sched_group(struct task_group *tg, struct task_group *parent)
+int alloc_freezer_sched_group(struct task_group *tg, struct task_group *parent)
 {
 	return 1;
 }
@@ -94,7 +206,7 @@ static inline void freezer_set_overload(struct rq *rq)
 	 * if we looked at the mask, but the mask was not
 	 * updated yet.
 	 *
-	 * Matched by the barrier in pull_rt_task().
+	 * Matched by the barrier in pull_freezer_task().
 	 */
 	smp_wmb();
 	atomic_inc(&rq->rd->rto_count);
@@ -118,20 +230,20 @@ static inline int has_pushable_tasks(struct rq *rq)
 static DEFINE_PER_CPU(struct balance_callback, freezer_push_head);
 static DEFINE_PER_CPU(struct balance_callback, freezer_pull_head);
 
-static void push_rt_tasks(struct rq *);
-static void pull_rt_task(struct rq *);
+static void push_freezer_tasks(struct rq *);
+static void pull_freezer_task(struct rq *);
 
 static inline void freezer_queue_push_tasks(struct rq *rq)
 {
 	if (!has_pushable_tasks(rq))
 		return;
 
-	queue_balance_callback(rq, &per_cpu(freezer_push_head, rq->cpu), push_rt_tasks);
+	queue_balance_callback(rq, &per_cpu(freezer_push_head, rq->cpu), push_freezer_tasks);
 }
 
 static inline void freezer_queue_pull_task(struct rq *rq)
 {
-	queue_balance_callback(rq, &per_cpu(freezer_pull_head, rq->cpu), pull_rt_task);
+	queue_balance_callback(rq, &per_cpu(freezer_pull_head, rq->cpu), pull_freezer_task);
 }
 
 static void enqueue_pushable_task(struct rq *rq, struct task_struct *p)
@@ -160,7 +272,7 @@ static void dequeue_pushable_task(struct rq *rq, struct task_struct *p)
 				      struct task_struct, pushable_tasks);
 		rq->freezer.highest_prio.next = p->prio;
 	} else {
-		rq->freezer.highest_prio.next = MAX_RT_PRIO-1;
+		rq->freezer.highest_prio.next = MAX_FREEZDR_PRIO-1;
 
 		if (rq->freezer.overloaded) {
 			freezer_clear_overload(rq);
@@ -235,15 +347,15 @@ static inline u64 sched_freezer_runtime(struct freezer_rq *freezer_rq)
 	return freezer_rq->freezer_runtime;
 }
 
-static inline u64 sched_rt_period(struct rt_rq *rt_rq)
+static inline u64 sched_freezer_period(struct freezer_rq *freezer_rq)
 {
-	return ktime_to_ns(def_rt_bandwidth.rt_period);
+	return ktime_to_ns(def_freezer_bandwidth.freezer_period);
 }
 
 typedef struct freezer_rq *freezer_rq_iter_t;
 
 #define for_each_freezer_rq(freezer_rq, iter, rq) \
-	for ((void) iter, freezer_rq = &rq->freezer; freezer_rq; rt_rq = NULL)
+	for ((void) iter, freezer_rq = &rq->freezer; freezer_rq; freezer_rq = NULL)
 
 #define for_each_sched_freezer_entity(freezer_se) \
 	for (; freezer_se; freezer_se = NULL)
@@ -264,7 +376,7 @@ static inline void sched_freezer_rq_enqueue(struct freezer_rq *freezer_rq)
 	resched_curr(rq);
 }
 
-static inline void sched_freezer_rq_dequeue(struct rt_rq *rt_rq)
+static inline void sched_freezer_rq_dequeue(struct freezer_rq *freezer_rq)
 {
 	dequeue_top_freezer_rq(freezer_rq, freezer_rq->freezer_nr_running);
 }
@@ -280,22 +392,22 @@ static inline const struct cpumask *sched_freezer_period_mask(void)
 }
 
 static inline
-struct rt_rq *sched_rt_period_rt_rq(struct rt_bandwidth *rt_b, int cpu)
+struct freezer_rq *sched_freezer_period_freezer_rq(struct freezer_bandwidth *freezer_b, int cpu)
 {
 	return &cpu_rq(cpu)->freezer;
 }
 
-static inline struct rt_bandwidth *sched_rt_bandwidth(struct rt_rq *rt_rq)
+static inline struct freezer_bandwidth *sched_freezer_bandwidth(struct freezer_rq *freezer_rq)
 {
-	return &def_rt_bandwidth;
+	return &def_freezer_bandwidth;
 }
 
-bool sched_rt_bandwidth_account(struct rt_rq *rt_rq)
+bool sched_freezer_bandwidth_account(struct freezer_rq *freezer_rq)
 {
-	struct rt_bandwidth *rt_b = sched_rt_bandwidth(rt_rq);
+	struct freezer_bandwidth *freezer_b = sched_freezer_bandwidth(freezer_rq);
 
-	return (hrtimer_active(&rt_b->rt_period_timer) ||
-		rt_rq->rt_time < rt_b->rt_runtime);
+	return (hrtimer_active(&freezer_b->freezer_period_timer) ||
+		freezer_rq->freezer_time < freezer_b->freezer_runtime);
 }
 
 #ifdef CONFIG_SMP
@@ -304,51 +416,51 @@ bool sched_rt_bandwidth_account(struct rt_rq *rt_rq)
  */
 static void do_balance_runtime(struct freezer_rq *freezer_rq)
 {
-	struct rt_bandwidth *rt_b = sched_rt_bandwidth(rt_rq);
-	struct root_domain *rd = rq_of_freezer_rq(rt_rq)->rd;
+	struct freezer_bandwidth *freezer_b = sched_freezer_bandwidth(freezer_rq);
+	struct root_domain *rd = rq_of_freezer_rq(freezer_rq)->rd;
 	int i, weight;
-	u64 rt_period;
+	u64 freezer_period;
 
 	weight = cpumask_weight(rd->span);
 
-	raw_spin_lock(&rt_b->rt_runtime_lock);
-	rt_period = ktime_to_ns(rt_b->rt_period);
+	raw_spin_lock(&freezer_b->freezer_runtime_lock);
+	freezer_period = ktime_to_ns(freezer_b->freezer_period);
 	for_each_cpu(i, rd->span) {
-		struct rt_rq *iter = sched_rt_period_rt_rq(rt_b, i);
+		struct freezer_rq *iter = sched_freezer_period_freezer_rq(freezer_b, i);
 		s64 diff;
 
-		if (iter == rt_rq)
+		if (iter == freezer_rq)
 			continue;
 
-		raw_spin_lock(&iter->rt_runtime_lock);
+		raw_spin_lock(&iter->freezer_runtime_lock);
 		/*
 		 * Either all rqs have inf runtime and there's nothing to steal
 		 * or __disable_runtime() below sets a specific rq to inf to
 		 * indicate its been disabled and disallow stealing.
 		 */
-		if (iter->rt_runtime == RUNTIME_INF)
+		if (iter->freezer_runtime == RUNTIME_INF)
 			goto next;
 
 		/*
 		 * From runqueues with spare time, take 1/n part of their
 		 * spare time, but no more than our period.
 		 */
-		diff = iter->rt_runtime - iter->rt_time;
+		diff = iter->freezer_runtime - iter->freezer_time;
 		if (diff > 0) {
 			diff = div_u64((u64)diff, weight);
-			if (rt_rq->rt_runtime + diff > rt_period)
-				diff = rt_period - rt_rq->rt_runtime;
-			iter->rt_runtime -= diff;
-			rt_rq->rt_runtime += diff;
-			if (rt_rq->rt_runtime == rt_period) {
-				raw_spin_unlock(&iter->rt_runtime_lock);
+			if (freezer_rq->freezer_runtime + diff > freezer_period)
+				diff = freezer_period - freezer_rq->freezer_runtime;
+			iter->freezer_runtime -= diff;
+			freezer_rq->freezer_runtime += diff;
+			if (freezer_rq->freezer_runtime == freezer_period) {
+				raw_spin_unlock(&iter->freezer_runtime_lock);
 				break;
 			}
 		}
 next:
-		raw_spin_unlock(&iter->rt_runtime_lock);
+		raw_spin_unlock(&iter->freezer_runtime_lock);
 	}
-	raw_spin_unlock(&rt_b->rt_runtime_lock);
+	raw_spin_unlock(&freezer_b->freezer_runtime_lock);
 }
 
 /*
@@ -357,65 +469,65 @@ next:
 static void __disable_runtime(struct rq *rq)
 {
 	struct root_domain *rd = rq->rd;
-	rt_rq_iter_t iter;
-	struct rt_rq *rt_rq;
+	freezer_rq_iter_t iter;
+	struct freezer_rq *freezer_rq;
 
 	if (unlikely(!scheduler_running))
 		return;
 
-	for_each_rt_rq(rt_rq, iter, rq) {
-		struct rt_bandwidth *rt_b = sched_rt_bandwidth(rt_rq);
+	for_each_freezer_rq(freezer_rq, iter, rq) {
+		struct freezer_bandwidth *freezer_b = sched_freezer_bandwidth(freezer_rq);
 		s64 want;
 		int i;
 
-		raw_spin_lock(&rt_b->rt_runtime_lock);
-		raw_spin_lock(&rt_rq->rt_runtime_lock);
+		raw_spin_lock(&freezer_b->freezer_runtime_lock);
+		raw_spin_lock(&freezer_rq->freezer_runtime_lock);
 		/*
 		 * Either we're all inf and nobody needs to borrow, or we're
 		 * already disabled and thus have nothing to do, or we have
 		 * exactly the right amount of runtime to take out.
 		 */
-		if (rt_rq->rt_runtime == RUNTIME_INF ||
-				rt_rq->rt_runtime == rt_b->rt_runtime)
+		if (freezer_rq->freezer_runtime == RUNTIME_INF ||
+				freezer_rq->freezer_runtime == freezer_b->freezer_runtime)
 			goto balanced;
-		raw_spin_unlock(&rt_rq->rt_runtime_lock);
+		raw_spin_unlock(&freezer_rq->freezer_runtime_lock);
 
 		/*
 		 * Calculate the difference between what we started out with
 		 * and what we current have, that's the amount of runtime
 		 * we lend and now have to reclaim.
 		 */
-		want = rt_b->rt_runtime - rt_rq->rt_runtime;
+		want = freezer_b->freezer_runtime - freezer_rq->freezer_runtime;
 
 		/*
 		 * Greedy reclaim, take back as much as we can.
 		 */
 		for_each_cpu(i, rd->span) {
-			struct rt_rq *iter = sched_rt_period_rt_rq(rt_b, i);
+			struct freezer_rq *iter = sched_freezer_period_freezer_rq(freezer_b, i);
 			s64 diff;
 
 			/*
 			 * Can't reclaim from ourselves or disabled runqueues.
 			 */
-			if (iter == rt_rq || iter->rt_runtime == RUNTIME_INF)
+			if (iter == freezer_rq || iter->freezer_runtime == RUNTIME_INF)
 				continue;
 
-			raw_spin_lock(&iter->rt_runtime_lock);
+			raw_spin_lock(&iter->freezer_runtime_lock);
 			if (want > 0) {
-				diff = min_t(s64, iter->rt_runtime, want);
-				iter->rt_runtime -= diff;
+				diff = min_t(s64, iter->freezer_runtime, want);
+				iter->freezer_runtime -= diff;
 				want -= diff;
 			} else {
-				iter->rt_runtime -= want;
+				iter->freezer_runtime -= want;
 				want -= want;
 			}
-			raw_spin_unlock(&iter->rt_runtime_lock);
+			raw_spin_unlock(&iter->freezer_runtime_lock);
 
 			if (!want)
 				break;
 		}
 
-		raw_spin_lock(&rt_rq->rt_runtime_lock);
+		raw_spin_lock(&freezer_rq->freezer_runtime_lock);
 		/*
 		 * We cannot be left wanting - that would mean some runtime
 		 * leaked out of the system.
@@ -426,20 +538,20 @@ balanced:
 		 * Disable all the borrow logic by pretending we have inf
 		 * runtime - in which case borrowing doesn't make sense.
 		 */
-		rt_rq->rt_runtime = RUNTIME_INF;
-		rt_rq->rt_throttled = 0;
-		raw_spin_unlock(&rt_rq->rt_runtime_lock);
-		raw_spin_unlock(&rt_b->rt_runtime_lock);
+		freezer_rq->freezer_runtime = RUNTIME_INF;
+		freezer_rq->freezer_throttled = 0;
+		raw_spin_unlock(&freezer_rq->freezer_runtime_lock);
+		raw_spin_unlock(&freezer_b->freezer_runtime_lock);
 
-		/* Make rt_rq available for pick_next_task() */
-		sched_rt_rq_enqueue(rt_rq);
+		/* Make freezer_rq available for pick_next_task() */
+		sched_freezer_rq_enqueue(freezer_rq);
 	}
 }
 
 static void __enable_runtime(struct rq *rq)
 {
-	rt_rq_iter_t iter;
-	struct rt_rq *rt_rq;
+	freezer_rq_iter_t iter;
+	struct freezer_rq *freezer_rq;
 
 	if (unlikely(!scheduler_running))
 		return;
@@ -447,45 +559,45 @@ static void __enable_runtime(struct rq *rq)
 	/*
 	 * Reset each runqueue's bandwidth settings
 	 */
-	for_each_rt_rq(rt_rq, iter, rq) {
-		struct rt_bandwidth *rt_b = sched_rt_bandwidth(rt_rq);
+	for_each_freezer_rq(freezer_rq, iter, rq) {
+		struct freezer_bandwidth *freezer_b = sched_freezer_bandwidth(freezer_rq);
 
-		raw_spin_lock(&rt_b->rt_runtime_lock);
-		raw_spin_lock(&rt_rq->rt_runtime_lock);
-		rt_rq->rt_runtime = rt_b->rt_runtime;
-		rt_rq->rt_time = 0;
-		rt_rq->rt_throttled = 0;
-		raw_spin_unlock(&rt_rq->rt_runtime_lock);
-		raw_spin_unlock(&rt_b->rt_runtime_lock);
+		raw_spin_lock(&freezer_b->freezer_runtime_lock);
+		raw_spin_lock(&freezer_rq->freezer_runtime_lock);
+		freezer_rq->freezer_runtime = freezer_b->freezer_runtime;
+		freezer_rq->freezer_time = 0;
+		freezer_rq->freezer_throttled = 0;
+		raw_spin_unlock(&freezer_rq->freezer_runtime_lock);
+		raw_spin_unlock(&freezer_b->freezer_runtime_lock);
 	}
 }
 
-static void balance_runtime(struct rt_rq *rt_rq)
+static void balance_runtime(struct freezer_rq *freezer_rq)
 {
-	if (!sched_feat(RT_RUNTIME_SHARE))
+	if (!sched_feat(freezer_RUNTIME_SHARE))
 		return;
 
-	if (rt_rq->rt_time > rt_rq->rt_runtime) {
-		raw_spin_unlock(&rt_rq->rt_runtime_lock);
-		do_balance_runtime(rt_rq);
-		raw_spin_lock(&rt_rq->rt_runtime_lock);
+	if (freezer_rq->freezer_time > freezer_rq->freezer_runtime) {
+		raw_spin_unlock(&freezer_rq->freezer_runtime_lock);
+		do_balance_runtime(freezer_rq);
+		raw_spin_lock(&freezer_rq->freezer_runtime_lock);
 	}
 }
 #else /* !CONFIG_SMP */
-static inline void balance_runtime(struct rt_rq *rt_rq) {}
+static inline void balance_runtime(struct freezer_rq *freezer_rq) {}
 #endif /* CONFIG_SMP */
 
-static int do_sched_rt_period_timer(struct rt_bandwidth *rt_b, int overrun)
+static int do_sched_freezer_period_timer(struct freezer_bandwidth *freezer_b, int overrun)
 {
 	int i, idle = 1, throttled = 0;
 	const struct cpumask *span;
 
-	span = sched_rt_period_mask();
+	span = sched_freezer_period_mask();
 
 	for_each_cpu(i, span) {
 		int enqueue = 0;
-		struct rt_rq *rt_rq = sched_rt_period_rt_rq(rt_b, i);
-		struct rq *rq = rq_of_freezer_rq(rt_rq);
+		struct freezer_rq *freezer_rq = sched_freezer_period_freezer_rq(freezer_b, i);
+		struct rq *rq = rq_of_freezer_rq(freezer_rq);
 		struct rq_flags rf;
 		int skip;
 
@@ -493,27 +605,27 @@ static int do_sched_rt_period_timer(struct rt_bandwidth *rt_b, int overrun)
 		 * When span == cpu_online_mask, taking each rq->lock
 		 * can be time-consuming. Try to avoid it when possible.
 		 */
-		raw_spin_lock(&rt_rq->rt_runtime_lock);
-		if (!sched_feat(RT_RUNTIME_SHARE) && rt_rq->rt_runtime != RUNTIME_INF)
-			rt_rq->rt_runtime = rt_b->rt_runtime;
-		skip = !rt_rq->rt_time && !rt_rq->freezer_nr_running;
-		raw_spin_unlock(&rt_rq->rt_runtime_lock);
+		raw_spin_lock(&freezer_rq->freezer_runtime_lock);
+		if (!sched_feat(freezer_RUNTIME_SHARE) && freezer_rq->freezer_runtime != RUNTIME_INF)
+			freezer_rq->freezer_runtime = freezer_b->freezer_runtime;
+		skip = !freezer_rq->freezer_time && !freezer_rq->freezer_nr_running;
+		raw_spin_unlock(&freezer_rq->freezer_runtime_lock);
 		if (skip)
 			continue;
 
 		rq_lock(rq, &rf);
 		update_rq_clock(rq);
 
-		if (rt_rq->rt_time) {
+		if (freezer_rq->freezer_time) {
 			u64 runtime;
 
-			raw_spin_lock(&rt_rq->rt_runtime_lock);
-			if (rt_rq->rt_throttled)
-				balance_runtime(rt_rq);
-			runtime = rt_rq->rt_runtime;
-			rt_rq->rt_time -= min(rt_rq->rt_time, overrun*runtime);
-			if (rt_rq->rt_throttled && rt_rq->rt_time < runtime) {
-				rt_rq->rt_throttled = 0;
+			raw_spin_lock(&freezer_rq->freezer_runtime_lock);
+			if (freezer_rq->freezer_throttled)
+				balance_runtime(freezer_rq);
+			runtime = freezer_rq->freezer_runtime;
+			freezer_rq->freezer_time -= min(freezer_rq->freezer_time, overrun*runtime);
+			if (freezer_rq->freezer_throttled && freezer_rq->freezer_time < runtime) {
+				freezer_rq->freezer_throttled = 0;
 				enqueue = 1;
 
 				/*
@@ -523,26 +635,26 @@ static int do_sched_rt_period_timer(struct rt_bandwidth *rt_b, int overrun)
 				 * and this unthrottle will get accounted as
 				 * 'runtime'.
 				 */
-				if (rt_rq->freezer_nr_running && rq->curr == rq->idle)
+				if (freezer_rq->freezer_nr_running && rq->curr == rq->idle)
 					rq_clock_cancel_skipupdate(rq);
 			}
-			if (rt_rq->rt_time || rt_rq->freezer_nr_running)
+			if (freezer_rq->freezer_time || freezer_rq->freezer_nr_running)
 				idle = 0;
-			raw_spin_unlock(&rt_rq->rt_runtime_lock);
-		} else if (rt_rq->freezer_nr_running) {
+			raw_spin_unlock(&freezer_rq->freezer_runtime_lock);
+		} else if (freezer_rq->freezer_nr_running) {
 			idle = 0;
-			if (!freezer_rq_throttled(rt_rq))
+			if (!freezer_rq_throttled(freezer_rq))
 				enqueue = 1;
 		}
-		if (rt_rq->rt_throttled)
+		if (freezer_rq->freezer_throttled)
 			throttled = 1;
 
 		if (enqueue)
-			sched_rt_rq_enqueue(rt_rq);
+			sched_freezer_rq_enqueue(freezer_rq);
 		rq_unlock(rq, &rf);
 	}
 
-	if (!throttled && (!rt_bandwidth_enabled() || rt_b->rt_runtime == RUNTIME_INF))
+	if (!throttled && (!freezer_bandwidth_enabled() || freezer_b->freezer_runtime == RUNTIME_INF))
 		return 1;
 
 	return idle;
@@ -553,30 +665,30 @@ static inline int freezer_se_prio(struct sched_freezer_entity *freezer_se)
 	return freezer_task_of(freezer_se)->prio;
 }
 
-static int sched_rt_runtime_exceeded(struct rt_rq *rt_rq)
+static int sched_freezer_runtime_exceeded(struct freezer_rq *freezer_rq)
 {
-	u64 runtime = sched_rt_runtime(rt_rq);
+	u64 runtime = sched_freezer_runtime(freezer_rq);
 
-	if (rt_rq->rt_throttled)
-		return freezer_rq_throttled(rt_rq);
+	if (freezer_rq->freezer_throttled)
+		return freezer_rq_throttled(freezer_rq);
 
-	if (runtime >= sched_rt_period(rt_rq))
+	if (runtime >= sched_freezer_period(freezer_rq))
 		return 0;
 
-	balance_runtime(rt_rq);
-	runtime = sched_rt_runtime(rt_rq);
+	balance_runtime(freezer_rq);
+	runtime = sched_freezer_runtime(freezer_rq);
 	if (runtime == RUNTIME_INF)
 		return 0;
 
-	if (rt_rq->rt_time > runtime) {
-		struct rt_bandwidth *rt_b = sched_rt_bandwidth(rt_rq);
+	if (freezer_rq->freezer_time > runtime) {
+		struct freezer_bandwidth *freezer_b = sched_freezer_bandwidth(freezer_rq);
 
 		/*
 		 * Don't actually throttle groups that have no runtime assigned
 		 * but accrue some time due to boosting.
 		 */
-		if (likely(rt_b->rt_runtime)) {
-			rt_rq->rt_throttled = 1;
+		if (likely(freezer_b->freezer_runtime)) {
+			freezer_rq->freezer_throttled = 1;
 			printk_deferred_once("sched: RT throttling activated\n");
 		} else {
 			/*
@@ -584,11 +696,11 @@ static int sched_rt_runtime_exceeded(struct rt_rq *rt_rq)
 			 * replenishment is a joke, since it will replenish us
 			 * with exactly 0 ns.
 			 */
-			rt_rq->rt_time = 0;
+			freezer_rq->freezer_time = 0;
 		}
 
-		if (freezer_rq_throttled(rt_rq)) {
-			sched_freezer_rq_dequeue(rt_rq);
+		if (freezer_rq_throttled(freezer_rq)) {
+			sched_freezer_rq_dequeue(freezer_rq);
 			return 1;
 		}
 	}
@@ -606,65 +718,65 @@ static void update_curr_freezer(struct rq *rq)
 	struct sched_freezer_entity *freezer_se = &curr->rt;
 	s64 delta_exec;
 
-	if (curr->sched_class != &rt_sched_class)
+	if (curr->sched_class != &freezer_sched_class)
 		return;
 
 	delta_exec = update_curr_common(rq);
 	if (unlikely(delta_exec <= 0))
 		return;
 
-	if (!rt_bandwidth_enabled())
+	if (!freezer_bandwidth_enabled())
 		return;
 
 	for_each_sched_freezer_entity(freezer_se) {
-		struct rt_rq *rt_rq = freezer_rq_of_se(freezer_se);
+		struct freezer_rq *freezer_rq = freezer_rq_of_se(freezer_se);
 		int exceeded;
 
-		if (sched_rt_runtime(rt_rq) != RUNTIME_INF) {
-			raw_spin_lock(&rt_rq->rt_runtime_lock);
-			rt_rq->rt_time += delta_exec;
-			exceeded = sched_rt_runtime_exceeded(rt_rq);
+		if (sched_freezer_runtime(freezer_rq) != RUNTIME_INF) {
+			raw_spin_lock(&freezer_rq->freezer_runtime_lock);
+			freezer_rq->freezer_time += delta_exec;
+			exceeded = sched_freezer_runtime_exceeded(freezer_rq);
 			if (exceeded)
 				resched_curr(rq);
-			raw_spin_unlock(&rt_rq->rt_runtime_lock);
+			raw_spin_unlock(&freezer_rq->freezer_runtime_lock);
 			if (exceeded)
-				do_start_rt_bandwidth(sched_rt_bandwidth(rt_rq));
+				do_start_freezer_bandwidth(sched_freezer_bandwidth(freezer_rq));
 		}
 	}
 }
 
 static void
-dequeue_top_freezer_rq(struct rt_rq *rt_rq, unsigned int count)
+dequeue_top_freezer_rq(struct freezer_rq *freezer_rq, unsigned int count)
 {
-	struct rq *rq = rq_of_freezer_rq(rt_rq);
+	struct rq *rq = rq_of_freezer_rq(freezer_rq);
 
-	BUG_ON(&rq->rt != rt_rq);
+	BUG_ON(&rq->rt != freezer_rq);
 
-	if (!rt_rq->rt_queued)
+	if (!freezer_rq->freezer_queued)
 		return;
 
 	BUG_ON(!rq->nr_running);
 
 	sub_nr_running(rq, count);
-	rt_rq->rt_queued = 0;
+	freezer_rq->freezer_queued = 0;
 
 }
 
-static voidfreezer(struct rt_rq *rt_rq)
+static voidfreezer(struct freezer_rq *freezer_rq)
 {
-	struct rq *rq = rq_of_freezer_rq(rt_rq);
+	struct rq *rq = rq_of_freezer_rq(freezer_rq);
 
-	BUG_ON(&rq->rt != rt_rq);
+	BUG_ON(&rq->rt != freezer_rq);
 
-	if (rt_rq->rt_queued)
+	if (freezer_rq->freezer_queued)
 		return;
 
-	if (freezer_rq_throttled(rt_rq))
+	if (freezer_rq_throttled(freezer_rq))
 		return;
 
-	if (rt_rq->freezer_nr_running) {
-		add_nr_running(rq, rt_rq->freezer_nr_running);
-		rt_rq->rt_queued = 1;
+	if (freezer_rq->freezer_nr_running) {
+		add_nr_running(rq, freezer_rq->freezer_nr_running);
+		freezer_rq->freezer_queued = 1;
 	}
 
 	/* Kick cpufreq (see the comment in kernel/sched/sched.h). */
@@ -674,50 +786,50 @@ static voidfreezer(struct rt_rq *rt_rq)
 #if defined CONFIG_SMP
 
 static void
-inc_rt_prio_smp(struct rt_rq *rt_rq, int prio, int prev_prio)
+inc_freezer_prio_smp(struct freezer_rq *freezer_rq, int prio, int prev_prio)
 {
-	struct rq *rq = rq_of_freezer_rq(rt_rq);
+	struct rq *rq = rq_of_freezer_rq(freezer_rq);
 
 	if (rq->online && prio < prev_prio)
 		cpupri_set(&rq->rd->cpupri, rq->cpu, prio);
 }
 
 static void
-dec_rt_prio_smp(struct rt_rq *rt_rq, int prio, int prev_prio)
+dec_freezer_prio_smp(struct freezer_rq *freezer_rq, int prio, int prev_prio)
 {
-	struct rq *rq = rq_of_freezer_rq(rt_rq);
+	struct rq *rq = rq_of_freezer_rq(freezer_rq);
 
-	if (rq->online && rt_rq->highest_prio.curr != prev_prio)
-		cpupri_set(&rq->rd->cpupri, rq->cpu, rt_rq->highest_prio.curr);
+	if (rq->online && freezer_rq->highest_prio.curr != prev_prio)
+		cpupri_set(&rq->rd->cpupri, rq->cpu, freezer_rq->highest_prio.curr);
 }
 
 #else /* CONFIG_SMP */
 
 static inline
-void inc_rt_prio_smp(struct rt_rq *rt_rq, int prio, int prev_prio) {}
+void inc_freezer_prio_smp(struct freezer_rq *freezer_rq, int prio, int prev_prio) {}
 static inline
-void dec_rt_prio_smp(struct rt_rq *rt_rq, int prio, int prev_prio) {}
+void dec_freezer_prio_smp(struct freezer_rq *freezer_rq, int prio, int prev_prio) {}
 
 #endif /* CONFIG_SMP */
 
 #if defined CONFIG_SMP /* for RT this has || defined CONFIG_RT_GROUP_SCHED */
 static void
-inc_rt_prio(struct rt_rq *rt_rq, int prio)
+inc_freezer_prio(struct freezer_rq *freezer_rq, int prio)
 {
-	int prev_prio = rt_rq->highest_prio.curr;
+	int prev_prio = freezer_rq->highest_prio.curr;
 
 	if (prio < prev_prio)
-		rt_rq->highest_prio.curr = prio;
+		freezer_rq->highest_prio.curr = prio;
 
-	inc_rt_prio_smp(rt_rq, prio, prev_prio);
+	inc_freezer_prio_smp(freezer_rq, prio, prev_prio);
 }
 
 static void
-dec_rt_prio(struct rt_rq *rt_rq, int prio)
+dec_freezer_prio(struct freezer_rq *freezer_rq, int prio)
 {
-	int prev_prio = rt_rq->highest_prio.curr;
+	int prev_prio = freezer_rq->highest_prio.curr;
 
-	if (rt_rq->freezer_nr_running) {
+	if (freezer_rq->freezer_nr_running) {
 
 		WARN_ON(prio < prev_prio);
 
@@ -726,34 +838,34 @@ dec_rt_prio(struct rt_rq *rt_rq, int prio)
 		 * we may have some recomputation to do
 		 */
 		if (prio == prev_prio) {
-			struct rt_prio_array *array = &rt_rq->active;
+			struct freezer_prio_array *array = &freezer_rq->active;
 
-			rt_rq->highest_prio.curr =
+			freezer_rq->highest_prio.curr =
 				sched_find_first_bit(array->bitmap);
 		}
 
 	} else {
-		rt_rq->highest_prio.curr = MAX_RT_PRIO-1;
+		freezer_rq->highest_prio.curr = MAX_freezer_PRIO-1;
 	}
 
-	dec_rt_prio_smp(rt_rq, prio, prev_prio);
+	dec_freezer_prio_smp(freezer_rq, prio, prev_prio);
 }
 
 #else
 
-static inline void inc_rt_prio(struct freezer_rq *freezer_rq, int prio) {}
-static inline void dec_rt_prio(struct freezer_rq *freezer_rq, int prio) {}
+static inline void inc_freezer_prio(struct freezer_rq *freezer_rq, int prio) {}
+static inline void dec_freezer_prio(struct freezer_rq *freezer_rq, int prio) {}
 
 #endif /* CONFIG_SMP */
 
 static void
-inc_rt_group(struct sched_freezer_entity *freezer_se, struct freezer_rq *freezer_rq)
+inc_freezer_group(struct sched_freezer_entity *freezer_se, struct freezer_rq *freezer_rq)
 {
-	start_rt_bandwidth(&def_rt_bandwidth);
+	start_freezer_bandwidth(&def_freezer_bandwidth);
 }
 
 static inline
-void dec_rt_group(struct sched_freezer_entity *freezer_se, struct freezer_rq *freezer_rq) {}
+void dec_freezer_group(struct sched_freezer_entity *freezer_se, struct freezer_rq *freezer_rq) {}
 
 static inline
 unsigned int freezer_se_nr_running(struct sched_freezer_entity *freezer_se)
@@ -769,7 +881,7 @@ unsigned int freezer_se_nr_running(struct sched_freezer_entity *freezer_se)
 static inline
 unsigned int freezer_se_rr_nr_running(struct sched_freezer_entity *freezer_se)
 {
-	struct rt_rq *group_rq = group_rt_rq(freezer_se);
+	struct freezer_rq *group_rq = group_freezer_rq(freezer_se);
 	struct task_struct *tsk;
 
 	if (group_rq)
@@ -781,28 +893,28 @@ unsigned int freezer_se_rr_nr_running(struct sched_freezer_entity *freezer_se)
 }
 
 static inline
-void inc_freezer_tasks(struct sched_freezer_entity *freezer_se, struct rt_rq *rt_rq)
+void inc_freezer_tasks(struct sched_freezer_entity *freezer_se, struct freezer_rq *freezer_rq)
 {
 	int prio = freezer_se_prio(freezer_se);
 
-	WARN_ON(!rt_prio(prio));
-	rt_rq->freezer_nr_running += freezer_se_nr_running(freezer_se);
-	rt_rq->rr_nr_running += freezer_se_rr_nr_running(freezer_se);
+	WARN_ON(!freezer_prio(prio));
+	freezer_rq->freezer_nr_running += freezer_se_nr_running(freezer_se);
+	freezer_rq->rr_nr_running += freezer_se_rr_nr_running(freezer_se);
 
-	inc_rt_prio(rt_rq, prio);
-	inc_rt_group(freezer_se, rt_rq);
+	inc_freezer_prio(freezer_rq, prio);
+	inc_freezer_group(freezer_se, freezer_rq);
 }
 
 static inline
-void dec_freezer_tasks(struct sched_freezer_entity *freezer_se, struct rt_rq *rt_rq)
+void dec_freezer_tasks(struct sched_freezer_entity *freezer_se, struct freezer_rq *freezer_rq)
 {
-	WARN_ON(!rt_prio(freezer_se_prio(freezer_se)));
-	WARN_ON(!rt_rq->freezer_nr_running);
-	rt_rq->freezer_nr_running -= freezer_se_nr_running(freezer_se);
-	rt_rq->rr_nr_running -= freezer_se_rr_nr_running(freezer_se);
+	WARN_ON(!freezer_prio(freezer_se_prio(freezer_se)));
+	WARN_ON(!freezer_rq->freezer_nr_running);
+	freezer_rq->freezer_nr_running -= freezer_se_nr_running(freezer_se);
+	freezer_rq->rr_nr_running -= freezer_se_rr_nr_running(freezer_se);
 
-	dec_rt_prio(rt_rq, freezer_se_prio(freezer_se));
-	dec_rt_group(freezer_se, rt_rq);
+	dec_freezer_prio(freezer_rq, freezer_se_prio(freezer_se));
+	dec_freezer_group(freezer_se, freezer_rq);
 }
 
 /*
@@ -818,7 +930,7 @@ static inline bool move_entity(unsigned int flags)
 	return true;
 }
 
-static void __delist_freezer_entity(struct sched_freezer_entity *freezer_se, struct rt_prio_array *array)
+static void __delist_freezer_entity(struct sched_freezer_entity *freezer_se, struct freezer_prio_array *array)
 {
 	list_del_init(&freezer_se->run_list);
 
@@ -903,7 +1015,7 @@ update_stats_wait_end_freezer(struct freezer_rq *freezer_rq, struct sched_freeze
 }
 
 static inline void
-update_stats_dequeue_rt(struct rt_rq *rt_rq, struct sched_freezer_entity *freezer_se,
+update_stats_dequeue_rt(struct freezer_rq *freezer_rq, struct sched_freezer_entity *freezer_se,
 			int flags)
 {
 	struct task_struct *p = NULL;
@@ -931,7 +1043,7 @@ update_stats_dequeue_rt(struct rt_rq *rt_rq, struct sched_freezer_entity *freeze
 static void __enqueue_freezer_entity(struct sched_freezer_entity *freezer_se, unsigned int flags)
 {
 	struct freezer_rq *freezer_rq = freezer_rq_of_se(freezer_se);
-	struct freezer_prio_array *array = &rt_rq->active;
+	struct freezer_prio_array *array = &freezer_rq->active;
 	/* this is NULL since no groups */
 	struct freezer_rq *group_rq = group_freezer_rq(freezer_se);
 	struct list_head *queue = array->queue + freezer_se_prio(freezer_se);
@@ -954,7 +1066,7 @@ static void __enqueue_freezer_entity(struct sched_freezer_entity *freezer_se, un
 static void __dequeue_freezer_entity(struct sched_freezer_entity *freezer_se, unsigned int flags)
 {
 	struct freezer_rq *freezer_rq = freezer_rq_of_se(freezer_se);
-	struct freezer_prio_array *array = &rt_rq->active;
+	struct freezer_prio_array *array = &freezer_rq->active;
 
 	if (move_entity(flags)) {
 		WARN_ON_ONCE(!freezer_se->on_list);
@@ -1010,9 +1122,9 @@ static void dequeue_freezer_entity(struct sched_freezer_entity *freezer_se, unsi
 	dequeue_freezer_stack(freezer_se, flags);
 
 	for_each_sched_freezer_entity(freezer_se) {
-		struct rt_rq *rt_rq = group_rt_rq(freezer_se);
+		struct freezer_rq *freezer_rq = group_freezer_rq(freezer_se);
 
-		if (rt_rq && rt_rq->freezer_nr_running)
+		if (freezer_rq && freezer_rq->freezer_nr_running)
 			__enqueue_freezer_entity(freezer_se, flags);
 	}
 freezer(&rq->rt);
@@ -1056,7 +1168,7 @@ static void
 requeue_freezer_entity(struct freezer_rq *freezer_rq, struct sched_freezer_entity *freezer_se, int head)
 {
 	if (on_freezer_rq(freezer_se)) {
-		struct rt_prio_array *array = &freezer_rq->active;
+		struct freezer_prio_array *array = &freezer_rq->active;
 		struct list_head *queue = array->queue + freezer_se_prio(freezer_se);
 
 		if (head)
@@ -1194,7 +1306,7 @@ static int balance_freezer(struct rq *rq, struct task_struct *p, struct rq_flags
 		 * not yet started the picking loop.
 		 */
 		rq_unpin_lock(rq, rf);
-		pull_rt_task(rq);
+		pull_freezer_task(rq);
 		rq_repin_lock(rq, rf);
 	}
 
@@ -1237,7 +1349,7 @@ static inline void set_next_task_freezer(struct rq *rq, struct task_struct *p, b
 
 	p->se.exec_start = rq_clock_task(rq);
 	if (on_freezer_rq(&p->freezer))
-		update_stats_wait_end_freezer(rt_rq, freezer_se);
+		update_stats_wait_end_freezer(freezer_rq, freezer_se);
 
 	/* The running task is never eligible for pushing */
 	dequeue_pushable_task(rq, p);
@@ -1251,20 +1363,20 @@ static inline void set_next_task_freezer(struct rq *rq, struct task_struct *p, b
 	 * freezer task
 	 */
 	if (rq->curr->sched_class != &freezer_sched_class)
-		update_rt_rq_load_avg(rq_clock_pelt(rq), rq, 0);
+		update_freezer_rq_load_avg(rq_clock_pelt(rq), rq, 0);
 
-	rt_queue_push_tasks(rq);
+	freezer_queue_push_tasks(rq);
 }
 
-static struct sched_freezer_entity *pick_next_freezer_entity(struct rt_rq *rt_rq)
+static struct sched_freezer_entity *pick_next_freezer_entity(struct freezer_rq *freezer_rq)
 {
-	struct rt_prio_array *array = &rt_rq->active;
+	struct freezer_prio_array *array = &freezer_rq->active;
 	struct sched_freezer_entity *next = NULL;
 	struct list_head *queue;
 	int idx;
 
 	idx = sched_find_first_bit(array->bitmap);
-	BUG_ON(idx >= MAX_RT_PRIO);
+	BUG_ON(idx >= MAX_freezer_PRIO);
 
 	queue = array->queue + idx;
 	if (SCHED_WARN_ON(list_empty(queue)))
@@ -1277,14 +1389,14 @@ static struct sched_freezer_entity *pick_next_freezer_entity(struct rt_rq *rt_rq
 static struct task_struct *_pick_next_task_freezer(struct rq *rq)
 {
 	struct sched_freezer_entity *freezer_se;
-	struct rt_rq *rt_rq  = &rq->rt;
+	struct freezer_rq *freezer_rq  = &rq->rt;
 
 	do {
-		freezer_se = pick_next_freezer_entity(rt_rq);
+		freezer_se = pick_next_freezer_entity(freezer_rq);
 		if (unlikely(!freezer_se))
 			return NULL;
-		rt_rq = group_rt_rq(freezer_se);
-	} while (rt_rq);
+		freezer_rq = group_freezer_rq(freezer_se);
+	} while (freezer_rq);
 
 	return freezer_task_of(freezer_se);
 }
@@ -1314,14 +1426,14 @@ static struct task_struct *pick_next_task_freezer(struct rq *rq)
 static void put_prev_task_freezer(struct rq *rq, struct task_struct *p)
 {
 	struct sched_freezer_entity *freezer_se = &p->rt;
-	struct rt_rq *rt_rq = &rq->rt;
+	struct freezer_rq *freezer_rq = &rq->rt;
 
 	if (on_freezer_rq(&p->rt))
-		update_stats_wait_start_freezer(rt_rq, freezer_se);
+		update_stats_wait_start_freezer(freezer_rq, freezer_se);
 
 	update_curr_freezer(rq);
 
-	update_rt_rq_load_avg(rq_clock_pelt(rq), rq, 1);
+	update_freezer_rq_load_avg(rq_clock_pelt(rq), rq, 1);
 
 	/*
 	 * The previous task needs to be made eligible for pushing
@@ -1334,9 +1446,9 @@ static void put_prev_task_freezer(struct rq *rq, struct task_struct *p)
 #ifdef CONFIG_SMP
 
 /* Only try algorithms three times */
-#define RT_MAX_TRIES 3
+#define FREEZER_MAX_TRIES 3
 
-static int pick_rt_task(struct rq *rq, struct task_struct *p, int cpu)
+static int pick_freezer_task(struct rq *rq, struct task_struct *p, int cpu)
 {
 	if (!task_on_cpu(rq, p) &&
 	    cpumask_test_cpu(cpu, &p->cpus_mask))
@@ -1358,7 +1470,7 @@ static struct task_struct *pick_highest_pushable_task(struct rq *rq, int cpu)
 		return NULL;
 
 	plist_for_each_entry(p, head, pushable_tasks) {
-		if (pick_rt_task(rq, p, cpu))
+		if (pick_freezer_task(rq, p, cpu))
 			return p;
 	}
 
@@ -1390,7 +1502,7 @@ static int find_lowest_rq(struct task_struct *task)
 
 		ret = cpupri_find_fitness(&task_rq(task)->rd->cpupri,
 					  task, lowest_mask,
-					  rt_task_fits_capacity);
+					  freezer_task_fits_capacity);
 	} else {
 
 		ret = cpupri_find(&task_rq(task)->rd->cpupri,
@@ -1465,7 +1577,7 @@ static struct rq *find_lock_lowest_rq(struct task_struct *task, struct rq *rq)
 	int tries;
 	int cpu;
 
-	for (tries = 0; tries < RT_MAX_TRIES; tries++) {
+	for (tries = 0; tries < FREEZER_MAX_TRIES; tries++) {
 		cpu = find_lowest_rq(task);
 
 		if ((cpu == -1) || (cpu == rq->cpu))
@@ -1539,12 +1651,12 @@ static struct task_struct *pick_next_pushable_task(struct rq *rq)
 	return p;
 }
 
-/*
- * If the current CPU has more than one RT task, see if the non
+/* TODO changes for work stealing?
+ * If the current CPU has more than one freezer task, see if the non
  * running task can migrate over to a CPU that is running a task
  * of lesser priority.
  */
-static int push_rt_task(struct rq *rq, bool pull)
+static int push_freezer_task(struct rq *rq, bool pull)
 {
 	struct task_struct *next_task;
 	struct rq *lowest_rq;
@@ -1584,7 +1696,7 @@ retry:
 		 * Note that the stoppers are masqueraded as SCHED_FIFO
 		 * (cf. sched_set_stop_task()), so we can't rely on freezer_task().
 		 */
-		if (rq->curr->sched_class != &rt_sched_class)
+		if (rq->curr->sched_class != &freezer_sched_class)
 			return 0;
 
 		cpu = find_lowest_rq(rq->curr);
@@ -1664,10 +1776,10 @@ out:
 	return ret;
 }
 
-static void push_rt_tasks(struct rq *rq)
+static void push_freezer_tasks(struct rq *rq)
 {
-	/* push_rt_task will return true if it moved an RT */
-	while (push_rt_task(rq, false))
+	/* push_freezer_task will return true if it moved an RT */
+	while (push_freezer_task(rq, false))
 		;
 }
 
@@ -1820,7 +1932,7 @@ void rto_push_irq_work_func(struct irq_work *work)
 	 */
 	if (has_pushable_tasks(rq)) {
 		raw_spin_rq_lock(rq);
-		while (push_rt_task(rq, true))
+		while (push_freezer_task(rq, true))
 			;
 		raw_spin_rq_unlock(rq);
 	}
@@ -1842,15 +1954,15 @@ void rto_push_irq_work_func(struct irq_work *work)
 }
 #endif /* HAVE_RT_PUSH_IPI */
 
-static void pull_rt_task(struct rq *this_rq)
+static void pull_freezer_task(struct rq *this_rq)
 {
 	int this_cpu = this_rq->cpu, cpu;
 	bool resched = false;
 	struct task_struct *p, *push_task;
 	struct rq *src_rq;
-	int rt_overload_count = rt_overloaded(this_rq);
+	int freezer_overload_count = freezer_overloaded(this_rq);
 
-	if (likely(!rt_overload_count))
+	if (likely(!freezer_overload_count))
 		return;
 
 	/*
@@ -1860,7 +1972,7 @@ static void pull_rt_task(struct rq *this_rq)
 	smp_rmb();
 
 	/* If we are the only overloaded CPU do nothing */
-	if (rt_overload_count == 1 &&
+	if (freezer_overload_count == 1 &&
 	    cpumask_test_cpu(this_rq->cpu, this_rq->rd->rto_mask))
 		return;
 
@@ -1967,7 +2079,7 @@ static void task_woken_freezer(struct rq *rq, struct task_struct *p)
 			     rq->curr->prio <= p->prio);
 
 	if (need_to_push)
-		push_rt_tasks(rq);
+		push_freezer_tasks(rq);
 }
 
 /* Assumes rq->lock is held */
@@ -1984,8 +2096,8 @@ static void rq_online_freezer(struct rq *rq)
 /* Assumes rq->lock is held */
 static void rq_offline_freezer(struct rq *rq)
 {
-	if (rq->rt.overloaded)
-		rt_clear_overload(rq);
+	if (rq->freezer.overloaded)
+		freezer_clear_overload(rq);
 
 	__disable_runtime(rq);
 
@@ -2008,10 +2120,10 @@ static void switched_from_freezer(struct rq *rq, struct task_struct *p)
 	if (!task_on_rq_queued(p) || rq->rt.freezer_nr_running)
 		return;
 
-	rt_queue_pull_task(rq);
+	freezer_queue_pull_task(rq);
 }
 
-void __init init_sched_rt_class(void)
+void __init init_sched_freezer_class(void)
 {
 	unsigned int i;
 
@@ -2034,7 +2146,7 @@ static void switched_to_freezer(struct rq *rq, struct task_struct *p)
 	 * will now on be accounted into the latter.
 	 */
 	if (task_current(rq, p)) {
-		update_rt_rq_load_avg(rq_clock_pelt(rq), rq, 0);
+		update_freezer_rq_load_avg(rq_clock_pelt(rq), rq, 0);
 		return;
 	}
 
@@ -2046,7 +2158,7 @@ static void switched_to_freezer(struct rq *rq, struct task_struct *p)
 	if (task_on_rq_queued(p)) {
 #ifdef CONFIG_SMP
 		if (p->nr_cpus_allowed > 1 && rq->rt.overloaded)
-			rt_queue_push_tasks(rq);
+			freezer_queue_push_tasks(rq);
 #endif /* CONFIG_SMP */
 		if (p->prio < rq->curr->prio && cpu_online(cpu_of(rq)))
 			resched_curr(rq);
@@ -2070,7 +2182,7 @@ prio_changed_freezer(struct rq *rq, struct task_struct *p, int oldprio)
 		 * may need to pull tasks to this runqueue.
 		 */
 		if (oldprio < p->prio)
-			rt_queue_pull_task(rq);
+			freezer_queue_pull_task(rq);
 
 		/*
 		 * If there's a higher priority task waiting to run
@@ -2094,12 +2206,12 @@ prio_changed_freezer(struct rq *rq, struct task_struct *p, int oldprio)
 	}
 }
 
-#ifdef CONFIG_POSIX_TIMERS
+/* For now we don't implement POSIX timers */
+/* #ifdef CONFIG_POSIX_TIMERS
 static void watchdog(struct rq *rq, struct task_struct *p)
 {
 	unsigned long soft, hard;
 
-	/* max may change after cur was read, this will be fixed next tick */
 	soft = task_rlimit(p, RLIMIT_RTTIME);
 	hard = task_rlimit_max(p, RLIMIT_RTTIME);
 
@@ -2121,6 +2233,7 @@ static void watchdog(struct rq *rq, struct task_struct *p)
 #else
 static inline void watchdog(struct rq *rq, struct task_struct *p) { }
 #endif
+*/
 
 /*
  * scheduler tick hitting a task of our scheduling class.
@@ -2136,7 +2249,7 @@ static void task_tick_freezer(struct rq *rq, struct task_struct *curr, int queue
 
 	update_curr_freezer(rq);
 	// TODO freezer stats
-	//update_rt_rq_load_avg(rq_clock_pelt(rq), rq, 1);
+	//update_freezer_rq_load_avg(rq_clock_pelt(rq), rq, 1);
 
 	watchdog(rq, p);
 
@@ -2168,11 +2281,7 @@ static int task_is_throttled_freezer(struct task_struct *p, int cpu)
 {
 	struct freezer_rq *freezer_rq;
 
-#ifdef CONFIG_RT_GROUP_SCHED
-	freezer_rq = task_group(p)->freezer_rq[cpu];
-#else
 	freezer_rq = &cpu_rq(cpu)->freezer;
-#endif
 
 	return freezer_rq_throttled(freezer_rq);
 }
@@ -2227,40 +2336,40 @@ static int sched_freezer_global_constraints(void)
 	unsigned long flags;
 	int i;
 
-	raw_spin_lock_irqsave(&def_rt_bandwidth.rt_runtime_lock, flags);
+	raw_spin_lock_irqsave(&def_freezer_bandwidth.freezer_runtime_lock, flags);
 	for_each_possible_cpu(i) {
-		struct rt_rq *rt_rq = &cpu_rq(i)->rt;
+		struct freezer_rq *freezer_rq = &cpu_rq(i)->rt;
 
-		raw_spin_lock(&rt_rq->rt_runtime_lock);
-		rt_rq->rt_runtime = global_rt_runtime();
-		raw_spin_unlock(&rt_rq->rt_runtime_lock);
+		raw_spin_lock(&freezer_rq->freezer_runtime_lock);
+		freezer_rq->freezer_runtime = global_freezer_runtime();
+		raw_spin_unlock(&freezer_rq->freezer_runtime_lock);
 	}
-	raw_spin_unlock_irqrestore(&def_rt_bandwidth.rt_runtime_lock, flags);
+	raw_spin_unlock_irqrestore(&def_freezer_bandwidth.freezer_runtime_lock, flags);
 
 	return 0;
 }
 #endif /* CONFIG_SYSCTL */
 
 #ifdef CONFIG_SYSCTL
-static int sched_rt_global_validate(void)
+static int sched_freezer_global_validate(void)
 {
-	if ((sysctl_sched_rt_runtime != RUNTIME_INF) &&
-		((sysctl_sched_rt_runtime > sysctl_sched_rt_period) ||
-		 ((u64)sysctl_sched_rt_runtime *
-			NSEC_PER_USEC > max_rt_runtime)))
+	if ((sysctl_sched_freezer_runtime != RUNTIME_INF) &&
+		((sysctl_sched_freezer_runtime > sysctl_sched_freezer_period) ||
+		 ((u64)sysctl_sched_freezer_runtime *
+			NSEC_PER_USEC > max_freezer_runtime)))
 		return -EINVAL;
 
 	return 0;
 }
 
-static void sched_rt_do_global(void)
+static void sched_freezer_do_global(void)
 {
 	unsigned long flags;
 
-	raw_spin_lock_irqsave(&def_rt_bandwidth.rt_runtime_lock, flags);
-	def_rt_bandwidth.rt_runtime = global_rt_runtime();
-	def_rt_bandwidth.rt_period = ns_to_ktime(global_rt_period());
-	raw_spin_unlock_irqrestore(&def_rt_bandwidth.rt_runtime_lock, flags);
+	raw_spin_lock_irqsave(&def_freezer_bandwidth.freezer_runtime_lock, flags);
+	def_freezer_bandwidth.freezer_runtime = global_freezer_runtime();
+	def_freezer_bandwidth.freezer_period = ns_to_ktime(global_freezer_period());
+	raw_spin_unlock_irqrestore(&def_freezer_bandwidth.freezer_runtime_lock, flags);
 }
 
 static int sched_freezer_handler(struct ctl_table *table, int write, void *buffer,
@@ -2271,13 +2380,13 @@ static int sched_freezer_handler(struct ctl_table *table, int write, void *buffe
 	int ret;
 
 	mutex_lock(&mutex);
-	old_period = sysctl_sched_rt_period;
-	old_runtime = sysctl_sched_rt_runtime;
+	old_period = sysctl_sched_freezer_period;
+	old_runtime = sysctl_sched_freezer_runtime;
 
 	ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
 
 	if (!ret && write) {
-		ret = sched_rt_global_validate();
+		ret = sched_freezer_global_validate();
 		if (ret)
 			goto undo;
 
@@ -2289,13 +2398,13 @@ static int sched_freezer_handler(struct ctl_table *table, int write, void *buffe
 		if (ret)
 			goto undo;
 
-		sched_rt_do_global();
+		sched_freezer_do_global();
 		sched_dl_do_global();
 	}
 	if (0) {
 undo:
-		sysctl_sched_rt_period = old_period;
-		sysctl_sched_rt_runtime = old_runtime;
+		sysctl_sched_freezer_period = old_period;
+		sysctl_sched_freezer_runtime = old_runtime;
 	}
 	mutex_unlock(&mutex);
 
@@ -2329,14 +2438,14 @@ static int sched_rr_handler(struct ctl_table *table, int write, void *buffer,
 #endif /* CONFIG_SYSCTL */
 
 #ifdef CONFIG_SCHED_DEBUG
-void print_rt_stats(struct seq_file *m, int cpu)
+void print_freezer_stats(struct seq_file *m, int cpu)
 {
-	rt_rq_iter_t iter;
-	struct rt_rq *rt_rq;
+	freezer_rq_iter_t iter;
+	struct freezer_rq *freezer_rq;
 
 	rcu_read_lock();
-	for_each_rt_rq(rt_rq, iter, cpu_rq(cpu))
-		print_rt_rq(m, cpu, rt_rq);
+	for_each_freezer_rq(freezer_rq, iter, cpu_rq(cpu))
+		print_freezer_rq(m, cpu, freezer_rq);
 	rcu_read_unlock();
 }
 #endif /* CONFIG_SCHED_DEBUG */

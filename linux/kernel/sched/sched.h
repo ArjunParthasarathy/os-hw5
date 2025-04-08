@@ -275,6 +275,15 @@ struct rt_prio_array {
 	struct list_head queue[MAX_RT_PRIO];
 };
 
+struct rt_bandwidth {
+	/* nests inside the rq lock: */
+	raw_spinlock_t		rt_runtime_lock;
+	ktime_t			rt_period;
+	u64			rt_runtime;
+	struct hrtimer		rt_period_timer;
+	unsigned int		rt_period_active;
+};
+
 /*
  * This is the priority-queue data structure of the freezer scheduling class:
  */
@@ -283,13 +292,13 @@ struct freezer_prio_array {
 	struct list_head queue[MAX_FREEZER_PRIO-MAX_RT_PRIO-1];
 }
 
-struct rt_bandwidth {
+struct freezer_bandwidth {
 	/* nests inside the rq lock: */
-	raw_spinlock_t		rt_runtime_lock;
-	ktime_t			rt_period;
-	u64			rt_runtime;
-	struct hrtimer		rt_period_timer;
-	unsigned int		rt_period_active;
+	raw_spinlock_t		freezer_runtime_lock;
+	ktime_t			freezer_period;
+	u64			freezer_runtime;
+	struct hrtimer		freezer_period_timer;
+	unsigned int		freezer_period_active;
 };
 
 static inline int dl_bandwidth_enabled(void)
@@ -2435,7 +2444,7 @@ static inline bool sched_rt_runnable(struct rq *rq)
 	return rq->rt.rt_queued > 0;
 }
 
-static inline bool sched_frezer_runnable(struct rq *rq)
+static inline bool sched_freezer_runnable(struct rq *rq)
 {
 	return rq->freezer.freezer_queued > 0;
 }
@@ -2518,6 +2527,7 @@ extern void update_max_interval(void);
 
 extern void init_sched_dl_class(void);
 extern void init_sched_rt_class(void);
+extern void init_sched_freezer_class(void);
 extern void init_sched_fair_class(void);
 
 extern void reweight_task(struct task_struct *p, int prio);
@@ -2528,6 +2538,10 @@ extern void resched_cpu(int cpu);
 extern struct rt_bandwidth def_rt_bandwidth;
 extern void init_rt_bandwidth(struct rt_bandwidth *rt_b, u64 period, u64 runtime);
 extern bool sched_rt_bandwidth_account(struct rt_rq *rt_rq);
+
+extern struct freezer_bandwidth def_freezer_bandwidth;
+extern void init_freezer_bandwidth(struct freezer_bandwidth *freezer_b, u64 period, u64 runtime);
+extern bool sched_freezer_bandwidth_account(struct freezer_rq *freezer_rq);
 
 extern void init_dl_entity(struct sched_dl_entity *dl_se);
 

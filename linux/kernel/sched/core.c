@@ -163,10 +163,10 @@ static inline int __task_prio(const struct task_struct *p)
 		return -2;
 
 	if (rt_prio(p->prio)) /* includes deadline */
-		return p->prio; /* [-1, 99] */
+		return p->prio; /* [-1, 79] */
 
 	if (freezer_prio(p->prio)) /* just like rt */
-		return p->prio; /* [-1, 99] */
+		return p->prio; /* [80, 99] */
 
 	if (p->sched_class == &idle_sched_class)
 		return MAX_RT_PRIO + NICE_WIDTH; /* 140 */
@@ -7611,6 +7611,8 @@ static void __setscheduler_params(struct task_struct *p,
 	 * getparam()/getattr() don't report silly values for !rt tasks.
 	 */
 	p->rt_priority = attr->sched_priority;
+	if (freezer_policy(policy))
+		p->freezer_prio = freezer_prio();
 	p->normal_prio = normal_prio(p);
 	set_load_weight(p, true);
 }
@@ -7654,6 +7656,10 @@ static int user_check_sched_setscheduler(struct task_struct *p,
 		if (attr->sched_priority > p->rt_priority &&
 		    attr->sched_priority > rlim_rtprio)
 			goto req_priv;
+	}
+
+	if (freezer_policy(policy)) {
+
 	}
 
 	/*
@@ -7789,7 +7795,7 @@ recheck:
 			goto change;
 		if (rt_policy(policy) && attr->sched_priority != p->rt_priority)
 			goto change;
-		if (freezer_policy(policy) && attr->sched_priority != p->rt_priority)
+		if (freezer_policy(policy) && attr->sched_priority != p->freezer_priority)
 			goto change;
 		if (dl_policy(policy) && dl_param_changed(p, attr))
 			goto change;
@@ -8103,6 +8109,8 @@ static void get_params(struct task_struct *p, struct sched_attr *attr)
 		__getparam_dl(p, attr);
 	else if (task_has_rt_policy(p))
 		attr->sched_priority = p->rt_priority;
+	else if (task_has_freezer_policy(p))
+		attr->sched_priority = p->freezer_priority;
 	else
 		attr->sched_nice = task_nice(p);
 }
