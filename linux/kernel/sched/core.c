@@ -1034,6 +1034,7 @@ void wake_up_q(struct wake_q_head *head)
 
 /*
  * resched_curr - mark rq's current task 'to be rescheduled now'.
+ * We use this when our current task had its time slice expired and it needs to be preempted
  *
  * On UP this means the setting of the need_resched flag, on SMP it
  * might also involve a cross-CPU call to trigger the scheduler on
@@ -7655,10 +7656,6 @@ static int user_check_sched_setscheduler(struct task_struct *p,
 			goto req_priv;
 	}
 
-	if (freezer_policy(policy)) {
-
-	}
-
 	/*
 	 * Can't set/change SCHED_DEADLINE policy at all for now
 	 * (safest behavior); in the future we would like to allow
@@ -7731,11 +7728,11 @@ recheck:
 	 * 1..MAX_RT_PRIO-1,
 	 * SCHED_FREEZER, SCHED_NORMAL, SCHED_BATCH and SCHED_IDLE is 0.
 	 */
-	if (attr->sched_priority > MAX_RTPRIO-1)
+	if (attr->sched_priority > MAX_RT_PRIO-1)
 		return -EINVAL;
 	if ((dl_policy(policy) && !__checkparam_dl(attr)) ||
 	    (rt_policy(policy) != (attr->sched_priority != 0)) || 
-	    (freezer_policy(policy) != (attr->sched_priority != 0))) {
+	    (freezer_policy(policy) != (attr->sched_priority == 0))) {
 		return -EINVAL;
 	}
 		
@@ -9066,6 +9063,7 @@ SYSCALL_DEFINE1(sched_get_priority_max, int, policy)
 		break;
 	case SCHED_FREEZER:
 		ret = 0;
+		break;
 	case SCHED_DEADLINE:
 	case SCHED_NORMAL:
 	case SCHED_BATCH:
@@ -9095,6 +9093,7 @@ SYSCALL_DEFINE1(sched_get_priority_min, int, policy)
 		break;
 	case SCHED_FREEZER:
 		ret = 0;
+		break;
 	case SCHED_DEADLINE:
 	case SCHED_NORMAL:
 	case SCHED_BATCH:

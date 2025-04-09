@@ -284,6 +284,13 @@ struct rt_bandwidth {
 	unsigned int		rt_period_active;
 };
 
+/*
+ * This is the queue data structure of the Freezer scheduling class:
+ */
+struct freezer_array {
+	struct list_head *queue;
+};
+
 struct freezer_bandwidth {
 	/* nests inside the rq lock: */
 	raw_spinlock_t		freezer_runtime_lock;
@@ -755,22 +762,23 @@ static inline bool rt_rq_is_runnable(struct rt_rq *rt_rq)
 	return rt_rq->rt_queued && rt_rq->rt_nr_running;
 }
 
-/* Real-Time classes' related field in a runqueue: */
+/* Freezer class' related field in a runqueue: */
 struct freezer_rq {
-	struct freezer_prio_array	active;
-	/* we don't have RR vs FIFO here so only need single number */
+	struct freezer_array	active;
+	/* number of freezer tasks on this runqueue currently running on the CPU 
+	(is always either 0 or 1) */
 	unsigned int		freezer_nr_running;
-	//unsigned int		rr_nr_running;
-#if defined CONFIG_SMP /* no gropu sched for freezer */
-	struct {
-		int		curr; /* highest queued freezer task prio */
-#ifdef CONFIG_SMP
-		int		next; /* next highest */
+	int			freezer_rq_len;
+#if defined CONFIG_SMP /* no group sched for freezer */
+// 	struct {
+// 		int		curr; /* highest queued freezer task prio */
+// #ifdef CONFIG_SMP
+// 		int		next; /* next highest */
+// #endif
+// 	} highest_prio;
 #endif
-	} highest_prio;
-#endif
 #ifdef CONFIG_SMP
-	int			overloaded;
+	/* tasks we can send to other CPUs */
 	struct plist_head	pushable_tasks;
 
 #endif /* CONFIG_SMP */

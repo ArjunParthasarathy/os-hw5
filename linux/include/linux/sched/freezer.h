@@ -4,20 +4,17 @@
 
 #include <linux/sched.h>
 
-struct task_struct;
+//struct task_struct;
 
-static inline int freezer_prio(int prio)
-{
-        /* Freezer prios between RT and NORMAL */
-	if (unlikely(prio > MAX_RT_PRIO-1 && prio < MAX_FREEZER_PRIO))
-		return 1;
-	return 0;
-}
+// static inline int freezer_policy(int policy)
+// {
+// 	return policy == SCHED_FREEZER;
+// }
 
-static inline int freezer_task(struct task_struct *p)
-{
-	return freezer_prio(p->prio);
-}
+// static inline int freezer_task(struct task_struct *p)
+// {
+// 	return freezer_policy(p->policy);
+// }
 
 /*
  * define FREEZER_TIMESLICE so that every task receives
