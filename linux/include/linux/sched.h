@@ -593,12 +593,17 @@ struct sched_rt_entity {
 } __randomize_layout;
 
 struct sched_freezer_entity {
-	struct rb_node 			run_node;
+	struct list_head		run_list;
+	unsigned long			timeout;
+	unsigned long			watchdog_stamp;
+	unsigned int			time_slice;
+	unsigned short			on_rq;
+	unsigned short			on_list;
+
+	struct sched_freezer_entity	*back;
 	/* rq on which this entity is (to be) queued: */
 	struct freezer_rq		*freezer_rq;
-	unsigned int 			time_slice;
-	unsigned short			on_rq;
-};
+} __randomize_layout;
 
 typedef bool (*dl_server_has_tasks_f)(struct sched_dl_entity *);
 typedef struct task_struct *(*dl_server_pick_f)(struct sched_dl_entity *);
@@ -801,7 +806,6 @@ struct task_struct {
 	int				static_prio;
 	int				normal_prio;
 	unsigned int			rt_priority;
-	unsigned int			freezer_priority;
 
 	struct sched_entity		se;
 	struct sched_rt_entity		rt;

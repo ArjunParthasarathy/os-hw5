@@ -36,6 +36,7 @@
 #include <linux/sched/nohz.h>
 #include <linux/sched/rseq_api.h>
 #include <linux/sched/rt.h>
+#include <linux/sched/freezer.h>
 
 #include <linux/blkdev.h>
 #include <linux/context_tracking.h>
@@ -163,10 +164,7 @@ static inline int __task_prio(const struct task_struct *p)
 		return -2;
 
 	if (rt_prio(p->prio)) /* includes deadline */
-		return p->prio; /* [-1, 79] */
-
-	if (freezer_prio(p->prio)) /* just like rt */
-		return p->prio; /* [80, 99] */
+		return p->prio;
 
 	if (p->sched_class == &idle_sched_class)
 		return MAX_RT_PRIO + NICE_WIDTH; /* 140 */
@@ -2162,7 +2160,8 @@ void deactivate_task(struct rq *rq, struct task_struct *p, int flags)
 	dequeue_task(rq, p, flags);
 }
 
-static inline int __normal_prio(int policy, int rt_prio, int freezer_prio, int nice)
+/* note: we don't have freezer prios so don't modify this*/
+static inline int __normal_prio(int policy, int rt_prio, int nice)
 {
 	int prio;
 
@@ -2170,8 +2169,6 @@ static inline int __normal_prio(int policy, int rt_prio, int freezer_prio, int n
 		prio = MAX_DL_PRIO - 1;
 	else if (rt_policy(policy))
 		prio = MAX_RT_PRIO - 1 - rt_prio;
-	else if (freezer_policy(policy))
-		prio = MAX_FREEZER_PRIO - 1 - freezer_prio;
 	else
 		prio = NICE_TO_PRIO(nice);
 
@@ -2187,7 +2184,7 @@ static inline int __normal_prio(int policy, int rt_prio, int freezer_prio, int n
  */
 static inline int normal_prio(struct task_struct *p)
 {
-	return __normal_prio(p->policy, p->rt_priority, p->freezer_priority, PRIO_TO_NICE(p->static_prio));
+	return __normal_prio(p->policy, p->rt_priority, PRIO_TO_NICE(p->static_prio));
 }
 
 /*
@@ -2207,7 +2204,6 @@ static int effective_prio(struct task_struct *p)
 	 */
 	if (!rt_prio(p->prio))
 		return p->normal_prio;
-	// TODO add section for freezer_prio(p->prio)
 	return p->prio;
 }
 
@@ -4776,7 +4772,6 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 			p->policy = SCHED_NORMAL;
 			p->static_prio = NICE_TO_PRIO(0);
 			p->rt_priority = 0;
-			p->freezer_priority = 0;
 		} else if (PRIO_TO_NICE(p->static_prio) < 0)
 			p->static_prio = NICE_TO_PRIO(0);
 
@@ -4794,7 +4789,8 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 		return -EAGAIN;
 	else if (rt_prio(p->prio))
 		p->sched_class = &rt_sched_class;
-	else if (freezer_prio(p->prio))
+	/* since freezer only has valid prio of 0, we have to check policy == SCHED_FREEZER */
+	else if (freezer_policy(p->policy))
 		p->sched_class = &freezer_sched_class;
 	else
 		p->sched_class = &fair_sched_class;
@@ -7075,9 +7071,10 @@ static void __setscheduler_prio(struct task_struct *p, int prio)
 		p->sched_class = &dl_sched_class;
 	else if (rt_prio(prio))
 		p->sched_class = &rt_sched_class;
-	else if (freezer_prio(prio))
+	else if (freezer_policy(p->policy)) {
+		trace_printk("__setscheduler_prio() -> freezer_sched_class");
 		p->sched_class = &freezer_sched_class;
-	else
+	} else
 		p->sched_class = &fair_sched_class;
 
 	p->prio = prio;
@@ -7282,9 +7279,9 @@ void set_user_nice(struct task_struct *p, long nice)
 	 * The RT priorities are set via sched_setscheduler(), but we still
 	 * allow the 'normal' nice value to be set - but as expected
 	 * it won't have any effect on scheduling until the task is
-	 * SCHED_DEADLINE, SCHED_FIFO or SCHED_RR:
+	 * SCHED_DEADLINE, SCHED_FIFO, SCHED_RR, or SCHED_FREEZER:
 	 */
-	if (task_has_dl_policy(p) || task_has_rt_policy(p)) {
+	if (task_has_dl_policy(p) || task_has_rt_policy(p) || task_has_freezer_policy(p)) {
 		p->static_prio = NICE_TO_PRIO(nice);
 		return;
 	}
@@ -7383,13 +7380,14 @@ SYSCALL_DEFINE1(nice, int, increment)
  *
  * sched policy         return value   kernel prio    user prio/nice
  *
- * normal, batch, idle     [0 ... 39]  [100 ... 139]          0/[-20 ... 19]
- * fifo, rr             [-2 ... -100]     [98 ... 0]  [1 ... 99]
+ * normal, batch, idle     [0 ... 39]  [100 ... 139]     0/[-20 ... 19]
+ * freezer		   [-2 .. -20]    [98 .. 80]     [1 .. 20]
+ * fifo, rr             [-21 ... -100]     [79 ... 0]    [1 ... 80]
  * deadline                     -101             -1           0
  */
 int task_prio(const struct task_struct *p)
 {
-	return p->prio - MAX_RT_PRIO;
+	return p->prio - MAX_RT_PRIO; /* p->prio - 100 */
 }
 
 /**
@@ -7611,8 +7609,7 @@ static void __setscheduler_params(struct task_struct *p,
 	 * getparam()/getattr() don't report silly values for !rt tasks.
 	 */
 	p->rt_priority = attr->sched_priority;
-	if (freezer_policy(policy))
-		p->freezer_prio = freezer_prio();
+	/* for freezer, just read from rt_priority */
 	p->normal_prio = normal_prio(p);
 	set_load_weight(p, true);
 }
@@ -7701,6 +7698,7 @@ static int __sched_setscheduler(struct task_struct *p,
 				const struct sched_attr *attr,
 				bool user, bool pi)
 {
+	trace_printk("__sched_setscheduler()\n");
 	int oldpolicy = -1, policy = attr->sched_policy;
 	int retval, oldprio, newprio, queued, running;
 	const struct sched_class *prev_class;
@@ -7730,14 +7728,17 @@ recheck:
 
 	/*
 	 * Valid priorities for SCHED_FIFO and SCHED_RR are
-	 * 1..MAX_RT_PRIO-1, valid priority for SCHED_NORMAL,
-	 * SCHED_BATCH and SCHED_IDLE is 0.
+	 * 1..MAX_RT_PRIO-1,
+	 * SCHED_FREEZER, SCHED_NORMAL, SCHED_BATCH and SCHED_IDLE is 0.
 	 */
-	if (attr->sched_priority > MAX_RT_PRIO-1)
+	if (attr->sched_priority > MAX_RTPRIO-1)
 		return -EINVAL;
 	if ((dl_policy(policy) && !__checkparam_dl(attr)) ||
-	    ((rt_policy(policy) != (attr->sched_priority != 0)) && freezer_policy(policy) != (attr->sched_priority != 0)))
+	    (rt_policy(policy) != (attr->sched_priority != 0)) || 
+	    (freezer_policy(policy) != (attr->sched_priority != 0))) {
 		return -EINVAL;
+	}
+		
 
 	if (user) {
 		retval = user_check_sched_setscheduler(p, attr, policy, reset_on_fork);
@@ -7790,12 +7791,11 @@ recheck:
 	 * If not changing anything there's no need to proceed further,
 	 * but store a possible modification of reset_on_fork.
 	 */
+	 /* don't need to change anything here for freezer since we can't modify priority */
 	if (unlikely(policy == p->policy)) {
 		if (fair_policy(policy) && attr->sched_nice != task_nice(p))
 			goto change;
 		if (rt_policy(policy) && attr->sched_priority != p->rt_priority)
-			goto change;
-		if (freezer_policy(policy) && attr->sched_priority != p->freezer_priority)
 			goto change;
 		if (dl_policy(policy) && dl_param_changed(p, attr))
 			goto change;
@@ -8110,7 +8110,8 @@ static void get_params(struct task_struct *p, struct sched_attr *attr)
 	else if (task_has_rt_policy(p))
 		attr->sched_priority = p->rt_priority;
 	else if (task_has_freezer_policy(p))
-		attr->sched_priority = p->freezer_priority;
+		/* use rt_priority field */
+		attr->sched_priority = p->rt_priority;
 	else
 		attr->sched_nice = task_nice(p);
 }
@@ -9063,6 +9064,8 @@ SYSCALL_DEFINE1(sched_get_priority_max, int, policy)
 	case SCHED_RR:
 		ret = MAX_RT_PRIO-1;
 		break;
+	case SCHED_FREEZER:
+		ret = 0;
 	case SCHED_DEADLINE:
 	case SCHED_NORMAL:
 	case SCHED_BATCH:
@@ -9090,6 +9093,8 @@ SYSCALL_DEFINE1(sched_get_priority_min, int, policy)
 	case SCHED_RR:
 		ret = 1;
 		break;
+	case SCHED_FREEZER:
+		ret = 0;
 	case SCHED_DEADLINE:
 	case SCHED_NORMAL:
 	case SCHED_BATCH:
@@ -9992,6 +9997,7 @@ void __init sched_init(void)
 		rq->calc_load_active = 0;
 		rq->calc_load_update = jiffies + LOAD_FREQ;
 		init_cfs_rq(&rq->cfs);
+		init_freezer_rq(&rq->freezer);
 		init_rt_rq(&rq->rt);
 		init_dl_rq(&rq->dl);
 #ifdef CONFIG_FAIR_GROUP_SCHED

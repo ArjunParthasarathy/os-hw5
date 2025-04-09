@@ -9,21 +9,18 @@
 /*
  * Priority of a process goes from 0..MAX_PRIO-1, valid RT
  * priority is 0..MAX_RT_PRIO-1, 
- * SCHED_FREEZER tasks are in the range MAX_RT_PRIO..MAX_FREEZER_PRIO-1,
- * SCHED_NORMAL/SCHED_BATCH tasks are in the range MAX_FREEZER_PRIO..MAX_PRIO-1. 
+ * SCHED_NORMAL/SCHED_BATCH tasks are in the range MAX_RT_PRIO..MAX_PRIO-1. 
  * Priority values are inverted: lower p->prio value means higher priority.
  */
 
-#define MAX_RT_PRIO		80
-/* don't eat into the range of SCHED_NORMAL/SCHED_BATCH prios */
-#define MAX_FREEZER_PRIO	100
+#define MAX_RT_PRIO		100
 
-#define MAX_PRIO		(MAX_FREEZER_PRIO + NICE_WIDTH)
-#define DEFAULT_PRIO		(MAX_FREEZER_PRIO + NICE_WIDTH / 2)
+#define MAX_PRIO		(MAX_RT_PRIO + NICE_WIDTH)
+#define DEFAULT_PRIO		(MAX_RT_PRIO + NICE_WIDTH / 2)
 
 /*
  * Convert user-nice values [ -20 ... 0 ... 19 ]
- * to static priority [ MAX_RT_PRIO..MAX_PRIO-1 ],
+ * to static priority [ MAX_FREEZER_PRIO..MAX_PRIO-1 ],
  * and back.
  */
 #define NICE_TO_PRIO(nice)	((nice) + DEFAULT_PRIO)

@@ -284,14 +284,6 @@ struct rt_bandwidth {
 	unsigned int		rt_period_active;
 };
 
-/*
- * This is the priority-queue data structure of the freezer scheduling class:
- */
-struct freezer_prio_array {
-	DECLARE_BITMAP(bitmap, MAX_FREEZER_PRIO-MAX_RT_PRIO);/* include 1 bit for delimiter */
-	struct list_head queue[MAX_FREEZER_PRIO-MAX_RT_PRIO-1];
-}
-
 struct freezer_bandwidth {
 	/* nests inside the rq lock: */
 	raw_spinlock_t		freezer_runtime_lock;
@@ -557,6 +549,11 @@ extern void unregister_rt_sched_group(struct task_group *tg);
 extern void free_rt_sched_group(struct task_group *tg);
 extern int alloc_rt_sched_group(struct task_group *tg, struct task_group *parent);
 
+/* unused */
+extern void unregister_freezer_sched_group(struct task_group *tg);
+extern void free_freezer_sched_group(struct task_group *tg);
+extern int alloc_freezer_sched_group(struct task_group *tg, struct task_group *parent);
+
 /*
  * u64_u32_load/u64_u32_store
  *
@@ -709,6 +706,11 @@ static inline int rt_bandwidth_enabled(void)
 	return sysctl_sched_rt_runtime >= 0;
 }
 
+static inline int freezer_bandwidth_enabled(void)
+{
+	return sysctl_sched_rt_runtime >= 0;
+}
+
 /* RT IPI pull logic requires IRQ_WORK */
 #if defined(CONFIG_IRQ_WORK) && defined(CONFIG_SMP)
 # define HAVE_RT_PUSH_IPI
@@ -761,7 +763,7 @@ struct freezer_rq {
 	//unsigned int		rr_nr_running;
 #if defined CONFIG_SMP /* no gropu sched for freezer */
 	struct {
-		int		curr; /* highest queued rt task prio */
+		int		curr; /* highest queued freezer task prio */
 #ifdef CONFIG_SMP
 		int		next; /* next highest */
 #endif
@@ -781,9 +783,9 @@ struct freezer_rq {
 	raw_spinlock_t		freezer_runtime_lock;
 };
 
-static inline bool freezer_rq_is_runnable(struct rt_rq *rt_rq)
+static inline bool freezer_rq_is_runnable(struct freezer_rq *freezer_rq)
 {
-	return freezer_rq->freezer_queued && rt_rq->freezer_nr_running;
+	return freezer_rq->freezer_queued && freezer_rq->freezer_nr_running;
 }
 
 /* Deadline class' related fields in a runqueue */
@@ -2211,6 +2213,20 @@ static inline u64 global_rt_runtime(void)
 	return (u64)sysctl_sched_rt_runtime * NSEC_PER_USEC;
 }
 
+// Same as SCHED_RR and SCHED_FIFO
+static inline u64 global_freezer_period(void)
+{
+	return (u64)sysctl_sched_rt_period * NSEC_PER_USEC;
+}
+
+static inline u64 global_freezer_runtime(void)
+{
+	if (sysctl_sched_rt_runtime < 0)
+		return RUNTIME_INF;
+
+	return (u64)sysctl_sched_rt_runtime * NSEC_PER_USEC;
+}
+
 static inline int task_current(struct rq *rq, struct task_struct *p)
 {
 	return rq->curr == p;
@@ -2967,6 +2983,7 @@ static inline void resched_latency_warn(int cpu, u64 latency) {}
 
 extern void init_cfs_rq(struct cfs_rq *cfs_rq);
 extern void init_rt_rq(struct rt_rq *rt_rq);
+extern void init_freezer_rq(struct freezer_rq *freezer_rq);
 extern void init_dl_rq(struct dl_rq *dl_rq);
 
 extern void cfs_bandwidth_usage_inc(void);

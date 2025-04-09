@@ -11,7 +11,7 @@
  *  This code tracks the priority of each CPU so that global migration
  *  decisions are easy to calculate.  Each CPU can be in a state as follows:
  *
- *                 (INVALID), NORMAL, RT1, ... RT99, HIGHER
+ *                 (INVALID), NORMAL, RT1, ... RT80, FREEZER1, ... FREEZER20, HIGHER
  *
  *  going from the lowest priority to the highest.  CPUs in the INVALID state
  *  are not eligible for routing.  The system maintains this state with
@@ -30,12 +30,12 @@
  *
  *				  99        0 (CPUPRI_NORMAL)
  *
- *		1        98       98        1
- *	      ...
+ *		1        98       78       21
+ *	      
  *	       49        50       50       49
  *	       50        49       49       50
- *	      ...
- *	       99         0        0       99
+ *	      
+ *	       99         0        0       99       
  *
  *				 100	  100 (CPUPRI_HIGHER)
  */
@@ -49,7 +49,7 @@ static int convert_prio(int prio)
 		break;
 
 	case 0 ... 98:
-		cpupri = MAX_RT_PRIO-1 - prio;	/* 1 ... 99 */
+		cpupri = MAX_RT_PRIO-1 - prio; /* 1 ... 99 */
 		break;
 
 	case MAX_RT_PRIO-1:
@@ -201,7 +201,7 @@ int cpupri_find_fitness(struct cpupri *cp, struct task_struct *p,
  * cpupri_set - update the CPU priority setting
  * @cp: The cpupri context
  * @cpu: The target CPU
- * @newpri: The priority (INVALID,NORMAL,RT1-RT99,HIGHER) to assign to this CPU
+ * @newpri: The priority (INVALID,NORMAL,RT1-RT79, FREEZER1-FREEZER20,HIGHER) to assign to this CPU
  *
  * Note: Assumes cpu_rq(cpu)->lock is locked
  *
