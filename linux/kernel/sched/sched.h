@@ -285,6 +285,13 @@ struct rt_bandwidth {
 	unsigned int		rt_period_active;
 };
 
+/*
+ * This is the queue data structure of the Freezer scheduling class:
+ */
+struct freezer_array {
+	struct list_head *queue;
+};
+
 struct freezer_bandwidth {
 	/* nests inside the rq lock: */
 	raw_spinlock_t		freezer_runtime_lock;

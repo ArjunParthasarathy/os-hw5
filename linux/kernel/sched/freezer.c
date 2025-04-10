@@ -1769,13 +1769,14 @@ DEFINE_SCHED_CLASS(freezer) = {
 	.set_next_task          = set_next_task_freezer,
 
 #ifdef CONFIG_SMP
-	.balance		= balance_freezer,
+	//.balance		= balance_freezer,
 	.pick_task		= pick_task_freezer,
 	.select_task_rq		= select_task_rq_freezer,
 	.set_cpus_allowed       = set_cpus_allowed_common,
-	.rq_online              = rq_online_freezer,
-	.rq_offline             = rq_offline_freezer,
-	.task_woken		= task_woken_freezer,
+	//.rq_online              = rq_online_freezer,
+	//.rq_offline             = rq_offline_freezer,
+	// we don't need to push away tasks
+	//.task_woken		= task_woken_freezer,
 	.switched_from		= switched_from_freezer,
 	.find_lock_rq		= find_lock_lowest_rq_freezer,
 #endif
@@ -1792,7 +1793,7 @@ DEFINE_SCHED_CLASS(freezer) = {
 	.update_curr		= update_curr_freezer,
 
 #ifdef CONFIG_SCHED_CORE
-	.task_is_throttled	= task_is_throttled_freezer,
+	//.task_is_throttled	= task_is_throttled_freezer,
 #endif
 
 #ifdef CONFIG_UCLAMP_TASK
