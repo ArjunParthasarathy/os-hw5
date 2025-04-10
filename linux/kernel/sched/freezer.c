@@ -126,7 +126,7 @@ void init_freezer_rq(struct freezer_rq *freezer_rq)
 
 #if defined CONFIG_SMP
 #endif /* CONFIG_SMP */
-
+	freezer_rq->freezer_rq_len = 0;
 	raw_spin_lock_init(&freezer_rq->freezer_runtime_lock);
 }
 
@@ -932,13 +932,16 @@ static inline void set_next_task_freezer(struct rq *rq, struct task_struct *p, b
 static struct sched_freezer_entity *pick_next_freezer_entity(struct freezer_rq *freezer_rq)
 {
 	//trace_printk("pick_next_freezer_entity()\n");
-	struct list_head *queue = &freezer_rq->active;
 	struct sched_freezer_entity *next = NULL;
+	raw_spin_lock(&freezer_rq->freezer_runtime_lock);
+	struct list_head *queue = &freezer_rq->active;
 	
 	if (SCHED_WARN_ON(list_empty(queue)))
-
+		raw_spin_unlock(&freezer_rq->freezer_runtime_lock);
 		return NULL;
+
 	next = list_entry(queue->next, struct sched_freezer_entity, run_list);
+	raw_spin_unlock(&freezer_rq->freezer_runtime_lock);
 
 	return next;
 }
