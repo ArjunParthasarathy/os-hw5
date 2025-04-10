@@ -1034,6 +1034,7 @@ void wake_up_q(struct wake_q_head *head)
 
 /*
  * resched_curr - mark rq's current task 'to be rescheduled now'.
+ * We use this when our current task had its time slice expired and it needs to be preempted
  *
  * On UP this means the setting of the need_resched flag, on SMP it
  * might also involve a cross-CPU call to trigger the scheduler on
@@ -4546,6 +4547,12 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	p->rt.on_rq		= 0;
 	p->rt.on_list		= 0;
 
+	/* when we fork and create a new proc we need to initialize its freezer rq */
+	INIT_LIST_HEAD(&p->freezer.run_list);
+	p->freezer.time_slice		= sched_freezer_timeslice;
+	p->freezer.on_rq		= 0;
+	p->freezer.on_list		= 0;
+
 #ifdef CONFIG_PREEMPT_NOTIFIERS
 	INIT_HLIST_HEAD(&p->preempt_notifiers);
 #endif
@@ -4790,9 +4797,10 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 	else if (rt_prio(p->prio))
 		p->sched_class = &rt_sched_class;
 	/* since freezer only has valid prio of 0, we have to check policy == SCHED_FREEZER */
-	else if (freezer_policy(p->policy))
+	else if (freezer_policy(p->policy)) {
+		trace_printk("sched_fork() freezer\n");
 		p->sched_class = &freezer_sched_class;
-	else
+	} else
 		p->sched_class = &fair_sched_class;
 
 	init_entity_runnable_average(&p->se);
@@ -6020,30 +6028,31 @@ __pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 	 * higher scheduling class, because otherwise those lose the
 	 * opportunity to pull in more work from other CPUs.
 	 */
-	if (likely(!sched_class_above(prev->sched_class, &fair_sched_class) &&
-		   rq->nr_running == rq->cfs.h_nr_running)) {
+	// Make sure freezer scheduler actually runs
+	// if (likely(!sched_class_above(prev->sched_class, &fair_sched_class) &&
+	// 	   rq->nr_running == rq->cfs.h_nr_running)) {
 
-		p = pick_next_task_fair(rq, prev, rf);
-		if (unlikely(p == RETRY_TASK))
-			goto restart;
+	// 	p = pick_next_task_fair(rq, prev, rf);
+	// 	if (unlikely(p == RETRY_TASK))
+	// 		goto restart;
 
-		/* Assume the next prioritized class is idle_sched_class */
-		if (!p) {
-			put_prev_task(rq, prev);
-			p = pick_next_task_idle(rq);
-		}
+	// 	/* Assume the next prioritized class is idle_sched_class */
+	// 	if (!p) {
+	// 		put_prev_task(rq, prev);
+	// 		p = pick_next_task_idle(rq);
+	// 	}
 
-		/*
-		 * This is the fast path; it cannot be a DL server pick;
-		 * therefore even if @p == @prev, ->dl_server must be NULL.
-		 */
-		if (p->dl_server)
-			p->dl_server = NULL;
+	// 	/*
+	// 	 * This is the fast path; it cannot be a DL server pick;
+	// 	 * therefore even if @p == @prev, ->dl_server must be NULL.
+	// 	 */
+	// 	if (p->dl_server)
+	// 		p->dl_server = NULL;
 
-		return p;
-	}
+	// 	return p;
+	// }
 
-restart:
+//restart:
 	put_prev_task_balance(rq, prev, rf);
 
 	/*
@@ -7279,7 +7288,7 @@ void set_user_nice(struct task_struct *p, long nice)
 	 * The RT priorities are set via sched_setscheduler(), but we still
 	 * allow the 'normal' nice value to be set - but as expected
 	 * it won't have any effect on scheduling until the task is
-	 * SCHED_DEADLINE, SCHED_FIFO, SCHED_RR, or SCHED_FREEZER:
+	 * SCHED_DEADLINE, SCHED_FIFO, or SCHED_RR:
 	 */
 	if (task_has_dl_policy(p) || task_has_rt_policy(p) || task_has_freezer_policy(p)) {
 		p->static_prio = NICE_TO_PRIO(nice);
@@ -7655,10 +7664,6 @@ static int user_check_sched_setscheduler(struct task_struct *p,
 			goto req_priv;
 	}
 
-	if (freezer_policy(policy)) {
-
-	}
-
 	/*
 	 * Can't set/change SCHED_DEADLINE policy at all for now
 	 * (safest behavior); in the future we would like to allow
@@ -7731,11 +7736,11 @@ recheck:
 	 * 1..MAX_RT_PRIO-1,
 	 * SCHED_FREEZER, SCHED_NORMAL, SCHED_BATCH and SCHED_IDLE is 0.
 	 */
-	if (attr->sched_priority > MAX_RTPRIO-1)
+	if (attr->sched_priority > MAX_RT_PRIO-1)
 		return -EINVAL;
 	if ((dl_policy(policy) && !__checkparam_dl(attr)) ||
 	    (rt_policy(policy) != (attr->sched_priority != 0)) || 
-	    (freezer_policy(policy) != (attr->sched_priority != 0))) {
+	    (freezer_policy(policy) != (attr->sched_priority == 0))) {
 		return -EINVAL;
 	}
 		
@@ -9066,6 +9071,7 @@ SYSCALL_DEFINE1(sched_get_priority_max, int, policy)
 		break;
 	case SCHED_FREEZER:
 		ret = 0;
+		break;
 	case SCHED_DEADLINE:
 	case SCHED_NORMAL:
 	case SCHED_BATCH:
@@ -9095,6 +9101,7 @@ SYSCALL_DEFINE1(sched_get_priority_min, int, policy)
 		break;
 	case SCHED_FREEZER:
 		ret = 0;
+		break;
 	case SCHED_DEADLINE:
 	case SCHED_NORMAL:
 	case SCHED_BATCH:
@@ -9884,6 +9891,9 @@ void __init sched_init_smp(void)
 	current->flags &= ~PF_NO_SETAFFINITY;
 	sched_init_granularity();
 
+	// We don't need to do this b/c it initializes the cpu not the class itself
+	// and so init_sched_rt_class() will do that
+	//init_sched_freezer_class();
 	init_sched_rt_class();
 	init_sched_dl_class();
 

@@ -593,15 +593,18 @@ struct sched_rt_entity {
 } __randomize_layout;
 
 struct sched_freezer_entity {
+	// connects to other freezer entitities in same rq
 	struct list_head		run_list;
-	unsigned long			timeout;
-	unsigned long			watchdog_stamp;
+
+	//unsigned long			watchdog_stamp;
 	unsigned int			time_slice;
+	// whether this entity is on some runqueue
 	unsigned short			on_rq;
 	unsigned short			on_list;
 
-	struct sched_freezer_entity	*back;
-	/* rq on which this entity is (to be) queued: */
+	//struct sched_freezer_entity	*back;
+
+	// (freezer) runqueue which this entity belongs to
 	struct freezer_rq		*freezer_rq;
 } __randomize_layout;
 

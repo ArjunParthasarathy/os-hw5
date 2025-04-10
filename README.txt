@@ -21,3 +21,5 @@ We have placed the corresponding data structures in the following locations:
 `struct sched_class freezer_sched_class` in `kernel/sched/freezer.c`
 `#define SCHED_FREEZER` in `include/uapi/linux/sched.h`,
 `#define FREEZER_TIMESLICE` in `include/linux/sched/freezer.h`
+
+TODO merge part3 branch into part2

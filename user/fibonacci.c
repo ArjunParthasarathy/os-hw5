@@ -18,7 +18,7 @@ int main(int argc, char **argv)
 	int ret;
 	unsigned long long n;
 
-	ret = sched_setscheduler(0, SCHED_OTHER, &params);
+	ret = sched_setscheduler(0, 7, &params);
 	if (ret) {
 		perror("Error\n");
 		fprintf(stderr, "Freezer scheduling policy does not exist\n");

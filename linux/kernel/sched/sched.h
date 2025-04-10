@@ -108,6 +108,7 @@ extern void call_trace_sched_update_nr_running(struct rq *rq, int count);
 extern int sysctl_sched_rt_period;
 extern int sysctl_sched_rt_runtime;
 extern int sched_rr_timeslice;
+extern int sched_freezer_timeslice;
 
 /*
  * Helpers for converting nanosecond timing to jiffy resolution
@@ -755,38 +756,38 @@ static inline bool rt_rq_is_runnable(struct rt_rq *rt_rq)
 	return rt_rq->rt_queued && rt_rq->rt_nr_running;
 }
 
-/* Real-Time classes' related field in a runqueue: */
+/* Freezer class' related field in a runqueue: */
 struct freezer_rq {
-	struct freezer_prio_array	active;
-	/* we don't have RR vs FIFO here so only need single number */
-	unsigned int		freezer_nr_running;
-	//unsigned int		rr_nr_running;
-#if defined CONFIG_SMP /* no gropu sched for freezer */
-	struct {
-		int		curr; /* highest queued freezer task prio */
-#ifdef CONFIG_SMP
-		int		next; /* next highest */
+	struct list_head	active;
+	/* number of freezer tasks on this runqueue currently running on the CPU 
+	(is always either 0 or 1) */
+	//unsigned int		freezer_nr_running;
+	int			freezer_rq_len;
+#if defined CONFIG_SMP /* no group sched for freezer */
+// 	struct {
+// 		int		curr; /* highest queued freezer task prio */
+// #ifdef CONFIG_SMP
+// 		int		next; /* next highest */
+// #endif
+// 	} highest_prio;
 #endif
-	} highest_prio;
-#endif
 #ifdef CONFIG_SMP
-	int			overloaded;
-	struct plist_head	pushable_tasks;
+	/* tasks we can send to other CPUs */
+	//struct plist_head	pushable_tasks;
 
 #endif /* CONFIG_SMP */
-	int			freezer_queued;
 
-	int			freezer_throttled;
-	u64			freezer_time;
-	u64			freezer_runtime;
+	//int			freezer_throttled;
+	//u64			freezer_time;
+	//u64			freezer_runtime;
 	/* Nests inside the rq lock: */
 	raw_spinlock_t		freezer_runtime_lock;
 };
 
-static inline bool freezer_rq_is_runnable(struct freezer_rq *freezer_rq)
-{
-	return freezer_rq->freezer_queued && freezer_rq->freezer_nr_running;
-}
+// static inline bool freezer_rq_is_runnable(struct freezer_rq *freezer_rq)
+// {
+// 	return freezer_rq->freezer_queued && freezer_rq->freezer_nr_running;
+// }
 
 /* Deadline class' related fields in a runqueue */
 struct dl_rq {
@@ -2462,7 +2463,7 @@ static inline bool sched_rt_runnable(struct rq *rq)
 
 static inline bool sched_freezer_runnable(struct rq *rq)
 {
-	return rq->freezer.freezer_queued > 0;
+	return rq->freezer.freezer_rq_len > 0;
 }
 
 static inline bool sched_fair_runnable(struct rq *rq)
