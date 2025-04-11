@@ -933,6 +933,7 @@ static struct sched_freezer_entity *pick_next_freezer_entity(struct freezer_rq *
 {
 	//trace_printk("pick_next_freezer_entity()\n");
 	struct sched_freezer_entity *next = NULL;
+	BUG_ON(!freezer_rq);
 	raw_spin_lock(&freezer_rq->freezer_runtime_lock);
 	struct list_head *queue = &freezer_rq->active;
 	
@@ -951,7 +952,7 @@ static struct task_struct *_pick_next_task_freezer(struct rq *rq)
 	//trace_printk("_pick_next_task_freezer()\n");
 	struct sched_freezer_entity *freezer_se;
 	struct freezer_rq *freezer_rq  = &rq->freezer;
-
+	BUG_ON(!freezer_rq);
 	freezer_se = pick_next_freezer_entity(freezer_rq);
 	if (unlikely(!freezer_se))
 		return NULL;
@@ -977,7 +978,7 @@ static struct task_struct *pick_next_task_freezer(struct rq *rq)
 		return NULL;
 	}	
 
-	p = _pick_next_task_freezer(rq);
+	//p = _pick_next_task_freezer(rq);
 	return p;
 }
 
@@ -1605,12 +1606,12 @@ static void switched_from_freezer(struct rq *rq, struct task_struct *p)
 void __init init_sched_freezer_class(void)
 {
 	trace_printk("init_sched_freezer_class()\n");
-	unsigned int i;
+	// unsigned int i;
 
-	for_each_possible_cpu(i) {
-		zalloc_cpumask_var_node(&per_cpu(local_cpu_mask, i),
-					GFP_KERNEL, cpu_to_node(i));
-	}
+	// for_each_possible_cpu(i) {
+	// 	zalloc_cpumask_var_node(&per_cpu(local_cpu_mask, i),
+	// 				GFP_KERNEL, cpu_to_node(i));
+	// }
 }
 #endif /* CONFIG_SMP */
 
@@ -1743,7 +1744,9 @@ static void task_tick_freezer(struct rq *rq, struct task_struct *p, int queued)
 
 	/* if time slice is 0, reset it and move task to back of queue*/
 	p->freezer.time_slice = sched_freezer_timeslice;
+	if (rt_se->run_list.prev != rt_se->run_list.next) {
 
+	}
 	requeue_task_freezer(rq, p);
 	resched_curr(rq);
 	return;
