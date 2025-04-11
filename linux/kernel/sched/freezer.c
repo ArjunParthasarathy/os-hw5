@@ -978,9 +978,9 @@ static struct task_struct *pick_next_task_freezer(struct rq *rq)
 		return NULL;
 	}	
 
-	//p = _pick_next_task_freezer(rq);
-	//return p;
-	return NULL;
+	p = _pick_next_task_freezer(rq);
+	return p;
+	//return NULL;
 }
 
 static void put_prev_task_freezer(struct rq *rq, struct task_struct *p)
@@ -1740,13 +1740,13 @@ static void task_tick_freezer(struct rq *rq, struct task_struct *p, int queued)
 	// watchdog(rq, p);
 
 	/* decrements time slice and if nonzero then we don't do anything  */
-	// if (--p->freezer.time_slice)
-	// 	return;
+	if (--p->freezer.time_slice)
+		return;
 
 	// /* if time slice is 0, reset it and move task to back of queue*/
-	// p->freezer.time_slice = sched_freezer_timeslice;
-	// requeue_task_freezer(rq, p);
-	// resched_curr(rq);
+	p->freezer.time_slice = sched_freezer_timeslice;
+	requeue_task_freezer(rq, p);
+	resched_curr(rq);
 	
 	return;
 }
