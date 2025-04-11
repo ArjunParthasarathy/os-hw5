@@ -936,10 +936,10 @@ static struct sched_freezer_entity *pick_next_freezer_entity(struct freezer_rq *
 	raw_spin_lock(&freezer_rq->freezer_runtime_lock);
 	struct list_head *queue = &freezer_rq->active;
 	
-	if (SCHED_WARN_ON(list_empty(queue)))
+	if (SCHED_WARN_ON(list_empty(queue))) {
 		raw_spin_unlock(&freezer_rq->freezer_runtime_lock);
 		return NULL;
-
+	}
 	next = list_entry(queue->next, struct sched_freezer_entity, run_list);
 	raw_spin_unlock(&freezer_rq->freezer_runtime_lock);
 
@@ -1780,10 +1780,10 @@ DEFINE_SCHED_CLASS(freezer) = {
 	.pick_task		= pick_task_freezer,
 	.select_task_rq		= select_task_rq_freezer,
 	.set_cpus_allowed       = set_cpus_allowed_common,
-	//.rq_online              = rq_online_freezer,
-	//.rq_offline             = rq_offline_freezer,
+	.rq_online              = rq_online_freezer,
+	.rq_offline             = rq_offline_freezer,
 	// we don't need to push away tasks
-	//.task_woken		= task_woken_freezer,
+	.task_woken		= task_woken_freezer,
 	.switched_from		= switched_from_freezer,
 	.find_lock_rq		= find_lock_lowest_rq_freezer,
 #endif
@@ -1800,7 +1800,7 @@ DEFINE_SCHED_CLASS(freezer) = {
 	.update_curr		= update_curr_freezer,
 
 #ifdef CONFIG_SCHED_CORE
-	//.task_is_throttled	= task_is_throttled_freezer,
+	.task_is_throttled	= task_is_throttled_freezer,
 #endif
 
 #ifdef CONFIG_UCLAMP_TASK
