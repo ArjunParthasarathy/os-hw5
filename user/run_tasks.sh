@@ -5,7 +5,7 @@ set -e
 
 if [ $# -lt 2 ]; then
     echo "Usage: $0 <job file> <policy> [cpu_list]"
-    echo "Policies: 1=FIFO, 7=FREEZER, 8=HEATER"
+    echo "Policies: 1=FIFO, 7=FREEZER, 0=DEFAULT"
     echo "cpu_list: comma-separated list of CPUs to use (e.g. 0,1,2,3)"
     exit 1
 fi
@@ -22,10 +22,10 @@ fi
 
 # Change ourselves to SCHED_FIFO at high priority
 # to ensure we get CPU time to launch all tasks
-chrt --fifo -p 99 $$
+sudo chrt --fifo -p 99 $$
 
 # Launch the eBPF trace.bt in the background (if not already running)
-sudo bpftrace trace.bt > ${FILE%.txt}_policy${POLICY}.log &
+sudo bpftrace trace.bt > part5_1cpu_logs/${FILE%.txt}_policy${POLICY}.log &
 TRACE_PID=$!
 
 # Give trace.bt time to start
@@ -35,10 +35,23 @@ sleep 1
 pids=""
 while read line; do
     if [ $USE_TASKSET -eq 1 ]; then
-        # Assign to specific CPUs for FIFO (to disable load balancing)
-        taskset -c $CPU_LIST ./fibonacci $line $POLICY &
+        # Assign to specific CPUs
+        if [ $POLICY -eq 1 ]; then
+            # For FIFO policy, use chrt
+            sudo taskset -c $CPU_LIST sudo chrt --fifo 1 ./fibonacci $line 0 &
+        else
+            # For other policies, set via fibonacci program
+            sudo taskset -c $CPU_LIST ./fibonacci $line $POLICY &
+        fi
     else
-        ./fibonacci $line $POLICY &
+        # No CPU constraints
+        if [ $POLICY -eq 1 ]; then
+            # For FIFO policy, use chrt
+            sudo chrt --fifo 1 ./fibonacci $line 0 &
+        else
+            # For other policies, set via fibonacci program
+            ./fibonacci $line $POLICY &
+        fi
     fi
     pids="$pids $!"
 done < $FILE
