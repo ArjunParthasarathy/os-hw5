@@ -348,11 +348,16 @@ static int kthread(void *_create)
 	struct kthread *self;
 	int ret;
 
+	/* Debug print: log the parameters passed to kthread() */
+	printk(KERN_DEBUG "[KTHREAD] kthread() entered: full_name = %s, threadfn = %p, data = %p\n",
+	create->full_name ? create->full_name : "NULL", threadfn, data);
+
 	self = to_kthread(current);
 
 	/* Release the structure when caller killed by a fatal signal. */
 	done = xchg(&create->done, NULL);
 	if (!done) {
+		printk(KERN_ERR "[KTHREAD] Error: Completion pointer is NULL. Exiting thread.\n");
 		kfree(create->full_name);
 		kfree(create);
 		kthread_exit(-EINTR);

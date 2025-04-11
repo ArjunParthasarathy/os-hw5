@@ -1472,6 +1472,7 @@ static int __ref kernel_init(void *unused)
 		       ramdisk_execute_command, ret);
 	}
 
+	printk(KERN_INFO "[KERNEL_INIT] Kernel init is primed.");
 	/*
 	 * We try each of these until one succeeds.
 	 *
@@ -1498,8 +1499,10 @@ static int __ref kernel_init(void *unused)
 	if (!try_to_run_init_process("/sbin/init") ||
 	    !try_to_run_init_process("/etc/init") ||
 	    !try_to_run_init_process("/bin/init") ||
-	    !try_to_run_init_process("/bin/sh"))
+	    !try_to_run_init_process("/bin/sh")) {
+		printk(KERN_INFO "[KERNEL_INIT] Kernel init is done.");
 		return 0;
+	}
 
 	panic("No working init found.  Try passing init= option to kernel. "
 	      "See Linux Documentation/admin-guide/init.rst for guidance.");

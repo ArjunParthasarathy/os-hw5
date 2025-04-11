@@ -4570,6 +4570,9 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	p->wake_entry.u_flags = CSD_TYPE_TTWU;
 	p->migration_pending = NULL;
 #endif
+	printk(KERN_INFO "[SCHED_FORK] __sched_fork() initialized task %s (pid=%d).\n"
+	"  Sched Class: Freezer: time_slice=%d, on_rq=%d, on_list=%d\n",
+	p->comm, p->pid, p->freezer.time_slice, p->freezer.on_rq, p->freezer.on_list);
 	init_sched_mm_cid(p);
 }
 

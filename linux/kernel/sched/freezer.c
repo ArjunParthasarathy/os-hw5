@@ -745,10 +745,17 @@ static void dequeue_freezer_entity(struct sched_freezer_entity *freezer_se, unsi
 static void
 enqueue_task_freezer(struct rq *rq, struct task_struct *p, int flags)
 {
+	/* Check whether the task is already on the freezer runqueue */
+	if (p->freezer.on_rq) {
+		printk(KERN_INFO "[FREEZER] enqueue_task_freezer(): task=%s (pid=%d) is already enqueued\n", p->comm, p->pid);
+		return;
+	}
+
 	printk(KERN_INFO "[FREEZER] enqueue_task_freezer(): task=%s (pid=%d)\n", p->comm, p->pid);
 
 	struct sched_freezer_entity *freezer_se = &p->freezer;
 	enqueue_freezer_entity(freezer_se, flags);
+	printk(KERN_INFO "[FREEZER] CPU %d freezer runqueue length after an enqueue: %d\n", rq->cpu, rq->freezer.freezer_rq_len);
 
 	// if (!task_current(rq, p) && p->nr_cpus_allowed > 1)
 	// 	/* If we're not the currently executing task on this runqueue, 
@@ -762,6 +769,7 @@ static void dequeue_task_freezer(struct rq *rq, struct task_struct *p, int flags
 	printk(KERN_INFO "[FREEZER] dequeue_task_freezer(): task=%s (pid=%d)\n", p->comm, p->pid);
 	struct sched_freezer_entity *freezer_se = &p->freezer;
 	dequeue_freezer_entity(freezer_se, flags);
+	printk(KERN_INFO "[FREEZER] CPU %d freezer runqueue length after a dequeue: %d\n", rq->cpu, rq->freezer.freezer_rq_len);
 
 	//dequeue_pushable_task_freezer(rq, p);
 }
@@ -971,7 +979,11 @@ static struct task_struct *pick_next_task_freezer(struct rq *rq)
 	}	
 
 	p = _pick_next_task_freezer(rq);
-	printk(KERN_INFO "[FREEZER] pick_next_task_freezer(): picked task=%s (pid=%d)\n", p->comm, p->pid);
+	if (!p) {
+		printk(KERN_INFO "[FREEZER] pick_next_task_freezer(): no valid task found\n");
+		return NULL;
+	}
+
 	if (p == rq->curr && !need_resched())
 		return NULL;
 	return p;
@@ -1686,15 +1698,29 @@ static void task_tick_freezer(struct rq *rq, struct task_struct *p, int queued)
 	//update_freezer_rq_load_avg(rq_clock_pelt(rq), rq, 1);
 
 	// watchdog(rq, p);
+	/* If the task is the idle task, we may choose not to decrement its timeslice */
+	if (is_idle_task(p)) {
+		if (rq->freezer.freezer_rq_len == 1)
+			return;
+	}
 
 	/* decrements time slice and if nonzero then we don't do anything  */
 	if (--p->freezer.time_slice)
 		return;
 
+	if (list_empty(&rq->freezer.active))
+		printk(KERN_INFO "[FREEZER] Runqueue on CPU %d empty\n", rq->cpu);
+	else
+		printk(KERN_INFO "[FREEZER] CPU %d freezer runqueue length: %d\n", rq->cpu, rq->freezer.freezer_rq_len);
+
 	// /* if time slice is 0, reset it and move task to back of queue*/
 	p->freezer.time_slice = sched_freezer_timeslice;
-	requeue_task_freezer(rq, p);
-	resched_curr(rq);
+	/* Only requeue if there are multiple tasks */
+	if (rq->freezer.freezer_rq_len > 1) {
+		requeue_task_freezer(rq, p);
+		/* Explicitly force a reschedule */
+		resched_curr(rq);
+	}
 	
 	return;
 }
