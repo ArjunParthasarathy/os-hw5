@@ -799,10 +799,10 @@ static void yield_task_freezer(struct rq *rq)
 	trace_printk("yield_task_freezer()\n");
 	/* current task needs to go to back of queue when it gets preempted
 	and have its timeslice reset */
-	struct task_struct *p = rq->curr;
-	p->freezer.time_slice = sched_freezer_timeslice;
+	// struct task_struct *p = rq->curr;
+	// p->freezer.time_slice = sched_freezer_timeslice;
 
-	requeue_task_freezer(rq, rq->curr);
+	// requeue_task_freezer(rq, rq->curr);
 }
 
 #ifdef CONFIG_SMP
@@ -979,7 +979,8 @@ static struct task_struct *pick_next_task_freezer(struct rq *rq)
 	}	
 
 	//p = _pick_next_task_freezer(rq);
-	return p;
+	//return p;
+	return NULL;
 }
 
 static void put_prev_task_freezer(struct rq *rq, struct task_struct *p)
@@ -1739,13 +1740,13 @@ static void task_tick_freezer(struct rq *rq, struct task_struct *p, int queued)
 	// watchdog(rq, p);
 
 	/* decrements time slice and if nonzero then we don't do anything  */
-	if (--p->freezer.time_slice)
-		return;
+	// if (--p->freezer.time_slice)
+	// 	return;
 
-	/* if time slice is 0, reset it and move task to back of queue*/
-	p->freezer.time_slice = sched_freezer_timeslice;
-	requeue_task_freezer(rq, p);
-	resched_curr(rq);
+	// /* if time slice is 0, reset it and move task to back of queue*/
+	// p->freezer.time_slice = sched_freezer_timeslice;
+	// requeue_task_freezer(rq, p);
+	// resched_curr(rq);
 	
 	return;
 }
@@ -1777,7 +1778,7 @@ DEFINE_SCHED_CLASS(freezer) = {
 	.set_next_task          = set_next_task_freezer,
 
 #ifdef CONFIG_SMP
-	//.balance		= balance_freezer,
+	.balance		= balance_freezer,
 	.pick_task		= pick_task_freezer,
 	.select_task_rq		= select_task_rq_freezer,
 	.set_cpus_allowed       = set_cpus_allowed_common,
