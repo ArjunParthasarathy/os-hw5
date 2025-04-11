@@ -972,8 +972,10 @@ static struct task_struct *pick_next_task_freezer(struct rq *rq)
 	struct task_struct *p;
 
 	/* Nothing in queue so we steal from CPU w/ least tasks */
-	if (!sched_freezer_runnable(rq))
-		return freezer_pick_task_from_other_cpus(rq);
+	if (!sched_freezer_runnable(rq)) {
+		//return freezer_pick_task_from_other_cpus(rq);
+		return NULL;
+	}	
 
 	p = _pick_next_task_freezer(rq);
 	return p;
@@ -1034,7 +1036,9 @@ static struct task_struct *freezer_pick_task_from_other_cpus(struct rq *rq)
 		rq_i = cpu_rq(i);
 		rq_lock_irqsave(rq_i, &rf);
 		head = &rq_i->freezer.active;
-		list_for_each_entry(freezer_se, head, run_list) {
+		struct list_head *pos = NULL;
+		list_for_each(pos, head) {
+			freezer_se = list_entry(pos, struct sched_freezer_entity, run_list);
 			task = freezer_task_of(freezer_se);
 			if (can_pick_freezer_task(rq_i, task, cpu)) {
 				rq_unlock_irqrestore(rq_i, &rf);
