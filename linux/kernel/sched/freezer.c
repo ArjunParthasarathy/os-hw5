@@ -789,8 +789,12 @@ static void requeue_task_freezer(struct rq *rq, struct task_struct *p)
 	struct sched_freezer_entity *freezer_se = &p->freezer;
 	struct freezer_rq *freezer_rq;
 
-	freezer_rq = freezer_rq_of_se(freezer_se);
-	requeue_freezer_entity(freezer_rq, freezer_se);
+	/* Only requeue if there is more than one task in the freezer rq */
+	if (freezer_rq->freezer_rq_len > 1) {
+		struct list_head *queue = &freezer_rq->active;
+		list_move_tail(&freezer_se->run_list, queue);
+		resched_curr(rq);  // Explicitly ask for reschedule
+	}
 }
 
 /* No need for lock here b/c its called w/ rq lock by scheduler */
@@ -924,7 +928,7 @@ static struct sched_freezer_entity *pick_next_freezer_entity(struct freezer_rq *
 	// raw_spin_lock(&freezer_rq->freezer_runtime_lock);
 	struct list_head *queue = &freezer_rq->active;
 	
-	if (SCHED_WARN_ON(list_empty(queue))) {
+	if (SCHED_WARN_ON(list_empty(queue)) || list_is_singular(queue)) {
 		//raw_spin_unlock(&freezer_rq->freezer_runtime_lock);
 		return NULL;
 	}
@@ -968,6 +972,8 @@ static struct task_struct *pick_next_task_freezer(struct rq *rq)
 
 	p = _pick_next_task_freezer(rq);
 	printk(KERN_INFO "[FREEZER] pick_next_task_freezer(): picked task=%s (pid=%d)\n", p->comm, p->pid);
+	if (p == rq->curr && !need_resched())
+		return NULL;
 	return p;
 }
 
