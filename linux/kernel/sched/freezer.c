@@ -974,13 +974,12 @@ static struct task_struct *pick_next_task_freezer(struct rq *rq)
 
 	/* Nothing in queue so we steal from CPU w/ least tasks */
 	if (!sched_freezer_runnable(rq)) {
-		//return freezer_pick_task_from_other_cpus(rq);
-		return NULL;
+		return freezer_pick_task_from_other_cpus(rq);
+		//return NULL;
 	}	
 
 	p = _pick_next_task_freezer(rq);
 	return p;
-	//return NULL;
 }
 
 static void put_prev_task_freezer(struct rq *rq, struct task_struct *p)
