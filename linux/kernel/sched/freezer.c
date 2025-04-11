@@ -965,7 +965,7 @@ static struct task_struct *pick_task_freezer(struct rq *rq)
 	return NULL;
 }
 
-static struct task_struct *freezer_pick_task_from_other_cpus(struct rq *rq);
+static struct task_struct *freezer_steal_task(struct rq *rq);
 
 static struct task_struct *pick_next_task_freezer(struct rq *rq)
 {
@@ -974,7 +974,7 @@ static struct task_struct *pick_next_task_freezer(struct rq *rq)
 
 	/* Nothing in queue so we steal from CPU w/ least tasks */
 	if (!sched_freezer_runnable(rq)) {
-		return freezer_pick_task_from_other_cpus(rq);
+		return freezer_steal_task(rq);
 		//return NULL;
 	}	
 
@@ -1008,9 +1008,10 @@ static void put_prev_task_freezer(struct rq *rq, struct task_struct *p)
 static int can_pick_freezer_task(struct rq *rq, struct task_struct *p, int cpu)
 {
 	trace_printk("can_pick_freezer_task()\n");
-	// If the task is not currently running and its CPU mask lets it run
-	// on this CPU
-	if (!task_on_cpu(rq, p) &&
+	/* If the task is not currently running, its allowed to be migrated, 
+	* and its CPU mask lets it run on this CPU 
+	*/
+	if (!task_on_cpu(rq, p) && !is_migration_disabled(p) &&
 	    cpumask_test_cpu(cpu, &p->cpus_mask))
 		return 1;
 
@@ -1018,38 +1019,55 @@ static int can_pick_freezer_task(struct rq *rq, struct task_struct *p, int cpu)
 }
 
 /*
- * Return t
+ * Steal a task from another CPU
  */
-static struct task_struct *freezer_pick_task_from_other_cpus(struct rq *rq)
+static struct task_struct *freezer_steal_task(struct rq *this_rq)
 {
-	trace_printk("freezer_pick_task_from_other_cpus()\n");
-	struct list_head *head;
+	trace_printk("freezer_steal_task()\n");
+	struct list_head *head, *pos;
 	struct sched_freezer_entity *freezer_se;
 	struct task_struct *task;
 	int i = 0;
-	int cpu = cpu_of(rq);
-	struct rq_flags rf;
+	int this_cpu = cpu_of(this_rq);
 	struct rq *rq_i;
 
-	/* Loop through all CPUs and still a task from someone (doesn't matter who) */
+	/* Loop through all CPUs and steal a task from someone (doesn't matter who) */
 	/* We keep looping til we find a task on some CPU which can be run on the current CPU (based on its CPU mask) */
 	for_each_cpu(i, cpu_present_mask) {
+		if (i == this_cpu)
+			continue;
+
 		rq_i = cpu_rq(i);
-		rq_lock_irqsave(rq_i, &rf);
+		if (!sched_freezer_runnable(rq_i)) {
+			continue;
+		}
+		double_lock_balance(this_rq, rq_i);
 		head = &rq_i->freezer.active;
-		struct list_head *pos = NULL;
 		list_for_each(pos, head) {
 			freezer_se = list_entry(pos, struct sched_freezer_entity, run_list);
+			BUG_ON(!freezer_se);
 			task = freezer_task_of(freezer_se);
-			if (can_pick_freezer_task(rq_i, task, cpu)) {
-				rq_unlock_irqrestore(rq_i, &rf);
+			/* If the task can run on this cpu and its allowed to be migrated */
+			if (can_pick_freezer_task(rq_i, task, this_cpu)) {
+				// Remove task from other cpu and add to ours
+				deactivate_task(rq_i, task, 0);
+				set_task_cpu(task, this_cpu);
+				activate_task(this_rq, task, 0);
+				/* this CPU has the idle task right now so preempt it to the new task
+				*  we just got
+				*/
+				resched_curr(this_rq);
+				double_unlock_balance(this_rq, rq_i);
+				trace_printk("Stole task from other CPU");
 				return task;
 			}	
 		}
-		rq_unlock_irqrestore(rq_i, &rf);
+		double_unlock_balance(this_rq, rq_i);
+		trace_printk("Trying next CPU");
 	}
 
 	/* No other task found on any other CPU :( */
+	trace_printk("No found tasks");
 	return NULL;
 }
 
