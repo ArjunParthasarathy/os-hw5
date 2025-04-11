@@ -787,8 +787,8 @@ static void requeue_task_freezer(struct rq *rq, struct task_struct *p)
 {
 	trace_printk("requeue_task_freezer()\n");
 	struct sched_freezer_entity *freezer_se = &p->freezer;
-	struct freezer_rq *freezer_rq;
-
+	struct freezer_rq *freezer_rq = freezer_rq_of_se(freezer_se);
+	
 	/* Only requeue if there is more than one task in the freezer rq */
 	if (freezer_rq->freezer_rq_len > 1) {
 		struct list_head *queue = &freezer_rq->active;

@@ -942,7 +942,7 @@ void start_kernel(void)
 	 * time - but meanwhile we still have a functioning scheduler.
 	 */
 	sched_init();
-	printk(KERN_INFO "[FREEZER] init_task using SCHED_FREEZER\n");
+	printk(KERN_INFO "[BOOT] init_task freezer.time_slice = %d\n", init_task.freezer.time_slice);
 
 	if (WARN(!irqs_disabled(),
 		 "Interrupts were enabled *very* early, fixing it\n"))
