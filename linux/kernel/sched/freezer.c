@@ -1007,7 +1007,7 @@ static void put_prev_task_freezer(struct rq *rq, struct task_struct *p)
 /* returns true if we can run this task on this CPU */
 static int can_pick_freezer_task(struct rq *rq, struct task_struct *p, int cpu)
 {
-	trace_printk("can_pick_freezer_task()\n");
+	//trace_printk("can_pick_freezer_task()\n");
 	/* If the task is not currently running, its allowed to be migrated, 
 	* and its CPU mask lets it run on this CPU 
 	*/
@@ -1023,7 +1023,7 @@ static int can_pick_freezer_task(struct rq *rq, struct task_struct *p, int cpu)
  */
 static struct task_struct *freezer_steal_task(struct rq *this_rq)
 {
-	trace_printk("freezer_steal_task()\n");
+	//trace_printk("freezer_steal_task()\n");
 	struct list_head *head, *pos;
 	struct sched_freezer_entity *freezer_se;
 	struct task_struct *task;
@@ -1058,16 +1058,16 @@ static struct task_struct *freezer_steal_task(struct rq *this_rq)
 				*/
 				resched_curr(this_rq);
 				double_unlock_balance(this_rq, rq_i);
-				trace_printk("Stole task from other CPU");
+				//trace_printk("Stole task from other CPU");
 				return task;
 			}	
 		}
 		double_unlock_balance(this_rq, rq_i);
-		trace_printk("Trying next CPU");
+		//trace_printk("Trying next CPU");
 	}
 
 	/* No other task found on any other CPU :( */
-	trace_printk("No found tasks");
+	//trace_printk("No found tasks");
 	return NULL;
 }
 
