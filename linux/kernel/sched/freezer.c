@@ -800,9 +800,10 @@ static void yield_task_freezer(struct rq *rq)
 	/* current task needs to go to back of queue when it gets preempted
 	and have its timeslice reset */
 	struct task_struct *p = rq->curr;
-	p->freezer.time_slice = sched_freezer_timeslice;
-
-	requeue_task_freezer(rq, rq->curr);
+	if (p) {
+		p->freezer.time_slice = sched_freezer_timeslice;
+		requeue_task_freezer(rq, rq->curr);
+	}
 }
 
 #ifdef CONFIG_SMP
@@ -875,9 +876,13 @@ static int balance_freezer(struct rq *rq, struct task_struct *p, struct rq_flags
 // /*
 //  * Preempt the current task with a newly woken task if needed:
 //  */
-static void wakeup_preempt_freezer(struct rq *rq, struct task_struct *p, int flags)
+static void check_wakeup_preempt_freezer(struct rq *rq, struct task_struct *p, int flags)
 {
-	return;
+	struct task_struct *curr = rq->curr;
+	/* If the newly woken task is non-idle, it needs to preempt current task */
+	if (unlikely(task_has_idle_policy(curr)) &&
+	    likely(!task_has_idle_policy(p)))
+		resched_curr(rq);
 }
 
 /* NO-OP */
@@ -910,6 +915,7 @@ static inline void set_next_task_freezer(struct rq *rq, struct task_struct *p, b
 }
 
 /* rq is already locked so we don't need to lock freezer_rq inside */
+/* Here we pick the head of the freezer rq */
 static struct sched_freezer_entity *pick_next_freezer_entity(struct freezer_rq *freezer_rq)
 {
 	//trace_printk("pick_next_freezer_entity()\n");
@@ -956,8 +962,8 @@ static struct task_struct *pick_next_task_freezer(struct rq *rq)
 
 	/* Nothing in queue so we steal from CPU w/ least tasks */
 	if (!sched_freezer_runnable(rq)) {
-		return freezer_steal_task(rq);
-		//return NULL;
+		//return freezer_steal_task(rq);
+		return NULL;
 	}	
 
 	p = _pick_next_task_freezer(rq);
@@ -1061,59 +1067,61 @@ static DEFINE_PER_CPU(cpumask_var_t, local_cpu_mask);
 /* find the runqueue with the lowest number of tasks */
 static struct rq *find_lowest_rq_freezer(struct task_struct *task)
 {
-	trace_printk("find_lowest_rq_freezer()\n");
-	//struct sched_domain *sd;
-	//struct cpumask *lowest_mask = this_cpu_cpumask_var_ptr(local_cpu_mask);
-	//int this_cpu = smp_processor_id();
-	int cpu      = task_cpu(task);
-	struct rq *this_rq = task_rq(task);
-	//int ret;
+	// trace_printk("find_lowest_rq_freezer()\n");
+	// //struct sched_domain *sd;
+	// //struct cpumask *lowest_mask = this_cpu_cpumask_var_ptr(local_cpu_mask);
+	// //int this_cpu = smp_processor_id();
+	// int cpu      = task_cpu(task);
+	// struct rq *this_rq = task_rq(task);
+	// //int ret;
 
-	/* Make sure the mask is initialized first */
-	// if (unlikely(!lowest_mask))
-	// 	return task_rq(task);
+	// /* Make sure the mask is initialized first */
+	// // if (unlikely(!lowest_mask))
+	// // 	return task_rq(task);
 
-	if (task->nr_cpus_allowed == 1)
-		return task_rq(task); /* No other targets possible */
+	// if (task->nr_cpus_allowed == 1)
+	// 	return task_rq(task); /* No other targets possible */
 
-	/* TODO do we really need this lock? */
-	//rcu_read_lock();
-	struct rq *rq_i;
-	int i = 0;
+	// /* TODO do we really need this lock? */
+	// //rcu_read_lock();
+	// struct rq *rq_i;
+	// int i = 0;
 	
-	struct rq *min_rq = this_rq;
-	//struct rq_flags rf;
+	// struct rq *min_rq = this_rq;
+	// //struct rq_flags rf;
 	
-	int min_rq_len = this_rq->freezer.freezer_rq_len;
+	// int min_rq_len = this_rq->freezer.freezer_rq_len;
 
-	for_each_cpu(i, cpu_present_mask) {
-		rq_i = cpu_rq(i);
-		/* use irq b/c we're looking across cpus so have multiple interrupts */
-		double_lock_balance(this_rq, rq_i);
-		if (rq_i->freezer.freezer_rq_len < min_rq_len) {
-			trace_printk("Found cpu %d w/ less tasks than curr cpu %d()\n", i, cpu);
-			min_rq = rq_i;
-			min_rq_len = rq_i->freezer.freezer_rq_len;
-		}
-		double_unlock_balance(this_rq, rq_i);
-	}
+	// for_each_cpu(i, cpu_present_mask) {
+	// 	rq_i = cpu_rq(i);
+	// 	/* use irq b/c we're looking across cpus so have multiple interrupts */
+	// 	double_lock_balance(this_rq, rq_i);
+	// 	if (rq_i->freezer.freezer_rq_len < min_rq_len) {
+	// 		trace_printk("Found cpu %d w/ less tasks than curr cpu %d()\n", i, cpu);
+	// 		min_rq = rq_i;
+	// 		min_rq_len = rq_i->freezer.freezer_rq_len;
+	// 	}
+	// 	double_unlock_balance(this_rq, rq_i);
+	// }
 	
-	return min_rq;
+	// return min_rq;
+	return NULL;
 }
 
 /* Will lock the rq it finds */
 static struct rq *find_lock_lowest_rq_freezer(struct task_struct *task, struct rq *rq)
 {
-	trace_printk("find_lock_lowest_rq_freezer()\n");
+	// trace_printk("find_lock_lowest_rq_freezer()\n");
 
-	struct rq *lowest_rq = find_lowest_rq_freezer(task);
-	BUG_ON(!lowest_rq);
-	/* If min_rq is not our own rq (which is already locked), 
-	then we need to lock before return */
-	if (rq != lowest_rq)
-		double_lock_balance(rq, lowest_rq);
+	// struct rq *lowest_rq = find_lowest_rq_freezer(task);
+	// BUG_ON(!lowest_rq);
+	// /* If min_rq is not our own rq (which is already locked), 
+	// then we need to lock before return */
+	// if (rq != lowest_rq)
+	// 	double_lock_balance(rq, lowest_rq);
 
-	return lowest_rq;
+	// return lowest_rq;
+	return NULL;
 }
 
 /* picks the next task from this rq we can push to other rqs */
@@ -1703,8 +1711,7 @@ DEFINE_SCHED_CLASS(freezer) = {
 	.dequeue_task		= dequeue_task_freezer,
 	.yield_task		= yield_task_freezer,
 
-	// we don't need to preempt tasks on wakeup
-	.wakeup_preempt		= wakeup_preempt_freezer,
+	.wakeup_preempt		= check_wakeup_preempt_freezer,
 
 	.pick_next_task		= pick_next_task_freezer,
 	.put_prev_task		= put_prev_task_freezer,

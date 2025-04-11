@@ -1233,6 +1233,11 @@ bool sched_can_stop_tick(struct rq *rq)
 {
 	int fifo_nr_running;
 
+	/* If we have any freezer tasks we need the tick to make it work */
+	if (rq->freezer.freezer_rq_len) {
+		return false;
+	}
+
 	/* Deadline tasks, even if single, need the tick */
 	if (rq->dl.dl_nr_running)
 		return false;
@@ -1257,7 +1262,7 @@ bool sched_can_stop_tick(struct rq *rq)
 		return true;
 
 	/*
-	 * If there are no DL,RR/FIFO tasks, there must only be CFS tasks left;
+	 * If there are no DL,RR/FIFO,Freezer tasks, there must only be CFS tasks left;
 	 * if there's more than one we need the tick for involuntary
 	 * preemption.
 	 */

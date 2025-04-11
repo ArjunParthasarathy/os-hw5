@@ -487,7 +487,7 @@ free_create:
  *
  * Description: This helper function creates and names a kernel
  * thread.  The thread will be stopped: use wake_up_process() to start
- * it.  See also kthread_run().  The new thread has SCHED_NORMAL policy and
+ * it.  See also kthread_run().  The new thread has SCHED_NORMAL (now SCHED_FREEZER) policy and
  * is affine to all CPUs.
  *
  * If thread is going to be bound on a particular cpu, give its node
