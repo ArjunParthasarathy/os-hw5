@@ -745,7 +745,7 @@ static void dequeue_freezer_entity(struct sched_freezer_entity *freezer_se, unsi
 static void
 enqueue_task_freezer(struct rq *rq, struct task_struct *p, int flags)
 {
-	trace_printk("enqueue_task_freezer()\n");
+	printk(KERN_INFO "[FREEZER] enqueue_task_freezer(): task=%s (pid=%d)\n", p->comm, p->pid);
 
 	struct sched_freezer_entity *freezer_se = &p->freezer;
 	enqueue_freezer_entity(freezer_se, flags);
@@ -759,7 +759,7 @@ enqueue_task_freezer(struct rq *rq, struct task_struct *p, int flags)
 /* Remove task from runqueue */
 static void dequeue_task_freezer(struct rq *rq, struct task_struct *p, int flags)
 {
-	trace_printk("dequeue_task_freezer()\n");
+	printk(KERN_INFO "[FREEZER] dequeue_task_freezer(): task=%s (pid=%d)\n", p->comm, p->pid);
 	struct sched_freezer_entity *freezer_se = &p->freezer;
 	dequeue_freezer_entity(freezer_se, flags);
 
@@ -796,7 +796,7 @@ static void requeue_task_freezer(struct rq *rq, struct task_struct *p)
 /* No need for lock here b/c its called w/ rq lock by scheduler */
 static void yield_task_freezer(struct rq *rq)
 {
-	trace_printk("yield_task_freezer()\n");
+	printk(KERN_INFO "[FREEZER] yield_task_freezer(): cpu=%d, task=%s\n", rq->cpu, rq->curr->comm);
 	/* current task needs to go to back of queue when it gets preempted
 	and have its timeslice reset */
 	struct task_struct *p = rq->curr;
@@ -962,11 +962,12 @@ static struct task_struct *pick_next_task_freezer(struct rq *rq)
 
 	/* Nothing in queue so we steal from CPU w/ least tasks */
 	if (!sched_freezer_runnable(rq)) {
-		//return freezer_steal_task(rq);
+		printk(KERN_INFO "[FREEZER] pick_next_task_freezer(): no tasks, rq=%d\n", rq->cpu);
 		return NULL;
 	}	
 
 	p = _pick_next_task_freezer(rq);
+	printk(KERN_INFO "[FREEZER] pick_next_task_freezer(): picked task=%s (pid=%d)\n", p->comm, p->pid);
 	return p;
 }
 
@@ -1570,7 +1571,7 @@ static void rq_offline_freezer(struct rq *rq)
  */
 static void switched_from_freezer(struct rq *rq, struct task_struct *p)
 {
-	trace_printk("switched_from_freezer()\n");
+	printk(KERN_INFO "[FREEZER] switched_from_freezer(): task=%s (pid=%d)\n", p->comm, p->pid);
 	// if (!task_on_rq_queued(p) || rq->freezer.freezer_rq_len)
 	// 	return;
 
@@ -1580,7 +1581,7 @@ static void switched_from_freezer(struct rq *rq, struct task_struct *p)
 
 void __init init_sched_freezer_class(void)
 {
-	trace_printk("init_sched_freezer_class()\n");
+	printk(KERN_INFO "[FREEZER] init_sched_freezer_class() called\n");
 	// unsigned int i;
 
 	// for_each_possible_cpu(i) {
@@ -1596,7 +1597,7 @@ void __init init_sched_freezer_class(void)
 /* For freezer this function doesn't do anything */
 static void switched_to_freezer(struct rq *rq, struct task_struct *p)
 {
-	trace_printk("switched_to_freezer()\n");
+	printk(KERN_INFO "[FREEZER] switched_to_freezer(): task=%s (pid=%d)\n", p->comm, p->pid);
 	/*
 	 * If we are running, update the avg_rt tracking, as the running time
 	 * will now on be accounted into the latter.
@@ -1671,7 +1672,7 @@ static inline void watchdog(struct rq *rq, struct task_struct *p) { }
  */
 static void task_tick_freezer(struct rq *rq, struct task_struct *p, int queued)
 {
-	trace_printk("task_tick_freezer()\n");
+	printk(KERN_INFO "[FREEZER] task_tick_freezer(): task=%s, slice=%d\n", p->comm, p->freezer.time_slice);
 	//struct sched_freezer_entity *freezer_se = &p->freezer;
 
 	//update_curr_freezer(rq);
