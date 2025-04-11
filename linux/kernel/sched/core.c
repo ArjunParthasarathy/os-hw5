@@ -4775,7 +4775,7 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 	 * Revert to default priority/policy on fork if requested.
 	 */
 	if (unlikely(p->sched_reset_on_fork)) {
-		if (task_has_dl_policy(p) || task_has_rt_policy(p) || task_has_freezer_policy(p)) {
+		if (task_has_dl_policy(p) || task_has_rt_policy(p)) {
 			/* Freezer change: now our default policy is SCHED_FREEZER */
 			p->policy = SCHED_FREEZER;
 			p->static_prio = NICE_TO_PRIO(0);

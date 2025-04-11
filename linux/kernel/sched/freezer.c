@@ -799,10 +799,10 @@ static void yield_task_freezer(struct rq *rq)
 	trace_printk("yield_task_freezer()\n");
 	/* current task needs to go to back of queue when it gets preempted
 	and have its timeslice reset */
-	// struct task_struct *p = rq->curr;
-	// p->freezer.time_slice = sched_freezer_timeslice;
+	struct task_struct *p = rq->curr;
+	p->freezer.time_slice = sched_freezer_timeslice;
 
-	// requeue_task_freezer(rq, rq->curr);
+	requeue_task_freezer(rq, rq->curr);
 }
 
 #ifdef CONFIG_SMP
@@ -1082,7 +1082,7 @@ static struct rq *find_lowest_rq_freezer(struct task_struct *task)
 	int i = 0;
 	
 	struct rq *min_rq = this_rq;
-	struct rq_flags rf;
+	//struct rq_flags rf;
 	
 	int min_rq_len = this_rq->freezer.freezer_rq_len;
 
