@@ -1744,11 +1744,9 @@ static void task_tick_freezer(struct rq *rq, struct task_struct *p, int queued)
 
 	/* if time slice is 0, reset it and move task to back of queue*/
 	p->freezer.time_slice = sched_freezer_timeslice;
-	if (rt_se->run_list.prev != rt_se->run_list.next) {
-
-	}
 	requeue_task_freezer(rq, p);
 	resched_curr(rq);
+	
 	return;
 }
 
