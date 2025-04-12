@@ -6,11 +6,6 @@
 
 //struct task_struct;
 
-// static inline int freezer_policy(int policy)
-// {
-// 	return policy == SCHED_FREEZER;
-// }
-
 // static inline int freezer_task(struct task_struct *p)
 // {
 // 	return freezer_policy(p->policy);

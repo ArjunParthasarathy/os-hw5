@@ -94,20 +94,17 @@ static void enqueue_freezer_entity(struct sched_freezer_entity *freezer_se, unsi
 {
 
 	struct freezer_rq *freezer_rq = freezer_rq_of_se(freezer_se);
-	raw_spin_lock(&freezer_rq->freezer_runtime_lock);
 	struct list_head *queue = &freezer_rq->active;
 	list_add_tail(&freezer_se->run_list, queue);
 	freezer_se->on_list = 1;
 	freezer_se->on_rq = 1;
 	
 	freezer_rq->freezer_rq_len += 1;
-	raw_spin_unlock(&freezer_rq->freezer_runtime_lock);
 }
 
 static void dequeue_freezer_entity(struct sched_freezer_entity *freezer_se, unsigned int flags)
 {
 	struct freezer_rq *freezer_rq = freezer_rq_of_se(freezer_se);
-	raw_spin_lock(&freezer_rq->freezer_runtime_lock);
 
 	if (freezer_se->on_list) {
 		// list_del() maintains the order of things on the queue
@@ -116,8 +113,6 @@ static void dequeue_freezer_entity(struct sched_freezer_entity *freezer_se, unsi
 	freezer_se->on_list = 0;
 	freezer_se->on_rq = 0;
 	freezer_rq->freezer_rq_len -= 1;
-
-	raw_spin_unlock(&freezer_rq->freezer_runtime_lock);
 }
 
 /*
@@ -149,11 +144,8 @@ requeue_freezer_entity(struct freezer_rq *freezer_rq, struct sched_freezer_entit
 {
 	if (on_freezer_rq(freezer_se)) {
 		struct list_head *queue = &freezer_rq->active;
-		raw_spin_lock(&freezer_rq->freezer_runtime_lock);
 		
 		list_move_tail(&freezer_se->run_list, queue);
-
-		raw_spin_unlock(&freezer_rq->freezer_runtime_lock);
 	}
 }
 
@@ -213,15 +205,12 @@ static struct sched_freezer_entity *pick_next_freezer_entity(struct freezer_rq *
 {
 	struct sched_freezer_entity *next = NULL;
 	BUG_ON(!freezer_rq);
-	raw_spin_lock(&freezer_rq->freezer_runtime_lock);
 	struct list_head *queue = &freezer_rq->active;
 	
 	if (SCHED_WARN_ON(list_empty(queue))) {
-		raw_spin_unlock(&freezer_rq->freezer_runtime_lock);
 		return NULL;
 	}
 	next = list_entry(queue->next, struct sched_freezer_entity, run_list);
-	raw_spin_unlock(&freezer_rq->freezer_runtime_lock);
 
 	return next;
 }
@@ -297,7 +286,10 @@ static struct task_struct *freezer_steal_task(struct rq *this_rq)
 			continue;
 
 		rq_i = cpu_rq(i);
+		double_lock_balance(this_rq, rq_i);
+
 		if (!sched_freezer_runnable(rq_i)) {
+			double_unlock_balance(this_rq, rq_i);
 			continue;
 		}
 		double_lock_balance(this_rq, rq_i);
@@ -336,7 +328,8 @@ static DEFINE_PER_CPU(cpumask_var_t, local_cpu_mask);
 static struct rq *find_lowest_rq_freezer(struct task_struct *task)
 {
 	trace_printk("find_lowest_rq_freezer()\n");
-	int cpu      = task_cpu(task);
+	int cpu = task_cpu(task);
+	struct rq *this_rq = task_rq(task);
 
 	if (task->nr_cpus_allowed == 1)
 		return task_rq(task); /* No other targets possible */
@@ -352,16 +345,18 @@ static struct rq *find_lowest_rq_freezer(struct task_struct *task)
 	int min_rq_len = min_rq->freezer.freezer_rq_len;
 	rq_unlock(min_rq, &rf);
 
+	int min_rq_len = this_rq->freezer.freezer_rq_len;
+
 	for_each_cpu(i, cpu_present_mask) {
 		rq_i = cpu_rq(i);
 		/* use irq b/c we're looking across cpus so have multiple interrupts */
-		rq_lock_irqsave(rq_i, &rf);
+		double_lock_balance(this_rq, rq_i);
 		if (rq_i->freezer.freezer_rq_len < min_rq_len) {
 			trace_printk("Found cpu %d w/ less tasks than curr cpu %d()\n", i, cpu);
 			min_rq = rq_i;
 			min_rq_len = rq_i->freezer.freezer_rq_len;
 		}
-		rq_unlock_irqrestore(rq_i, &rf);
+		double_unlock_balance(this_rq, rq_i);
 	}
 	
 	return min_rq;
@@ -372,24 +367,29 @@ static struct rq *find_lock_lowest_rq_freezer(struct task_struct *task, struct r
 {
 	trace_printk("find_lock_lowest_rq_freezer()\n");
 
-	struct rq_flags rf;
 	struct rq *lowest_rq = find_lowest_rq_freezer(task);
 	BUG_ON(!lowest_rq);
-	rq_lock(lowest_rq, &rf);
+	/* If min_rq is not our own rq (which is already locked), 
+ 	then we need to lock before return */
+ 	if (rq != lowest_rq)
+ 		double_lock_balance(rq, lowest_rq);
 
 	return lowest_rq;
 }
 
 void task_woken_freezer(struct rq *rq, struct task_struct *p)
 {
+	return;
 }
 
 /* Assumes rq->lock is held */
 static void rq_online_freezer(struct rq *rq)
 {
+	return;
 }
 static void rq_offline_freezer(struct rq *rq)
 {
+	return;
 }
 
 /*
@@ -398,12 +398,12 @@ static void rq_offline_freezer(struct rq *rq)
  */
 static void switched_from_freezer(struct rq *rq, struct task_struct *p)
 {
-	trace_printk("switched_from_freezer()\n");
+	return;
 }
 
 void __init init_sched_freezer_class(void)
 {
-	trace_printk("init_sched_freezer_class()\n");
+	return;
 }
 #endif /* CONFIG_SMP */
 
