@@ -953,10 +953,9 @@ static struct task_struct *_pick_next_task_freezer(struct rq *rq)
 	struct freezer_rq *freezer_rq  = &rq->freezer;
 	BUG_ON(!freezer_rq);
 	freezer_se = pick_next_freezer_entity(freezer_rq);
-	if (unlikely(!freezer_se))
-		return NULL;
-	
-	return freezer_task_of(freezer_se);
+	struct task_struct *p = freezer_task_of(freezer_se);
+	set_next_task_freezer(rq, p, true);
+	return p;
 }
 
 static struct task_struct *pick_task_freezer(struct rq *rq)
