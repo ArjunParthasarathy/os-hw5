@@ -25,7 +25,7 @@ fi
 sudo chrt --fifo -p 99 $$
 
 # Launch the eBPF trace.bt in the background (if not already running)
-sudo bpftrace trace.bt > part5_1cpu_logs/${FILE%.txt}_policy${POLICY}.log &
+sudo bpftrace trace.bt > part5_4cpu_logs/${FILE%.txt}_policy${POLICY}.log &
 TRACE_PID=$!
 
 # Give trace.bt time to start

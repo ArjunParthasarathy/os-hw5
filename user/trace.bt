@@ -1,84 +1,74 @@
 #!/usr/bin/env bpftrace
 /*
- * OS Team 15 - Sauce.
- * Referenced from the following source:
- * https://github.com/bpftrace/bpftrace/blob/aa041d9d85f9ec11235c39fdcb5833412ec27083/tools/runqlat.bt
- *
+ * This script records the task’s start time and the time it accumulates waiting in the runqueue.
+ * When a task exits, it prints:
+ *   - The accumulated runqueue waiting time in ms (RUNQ_MS) and
+ *   - The total lifetime of the task in ms (TOTAL_MS).
  */
-
-#ifndef BPFTRACE_HAVE_BTF
-#include <linux/sched.h>
-#else
-/*
- * With BTF providing types, full headers are not needed.
- * We only need to supply the preprocessor defines used in this script.
- * TASK_RUNNING is not arch-dependent and has not changed in the linux
- * git history (it is not part of the stable API though)
- */
-#define TASK_RUNNING 0
-#endif
 
 #include <stdio.h>
 #include <stdlib.h>
 
+#ifndef BPFTRACE_HAVE_BTF
+  #include <linux/sched.h>
+#else
+  // With BTF we don’t need full headers – just define the values in use.
+  #define TASK_RUNNING 0
+#endif
+
 BEGIN
 {
-	printf("COMM,PID,RUNQ_MS,TOTAL_MS\n");
+  // Print header for CSV output.
+  printf("COMM,PID,RUNQ_MS,TOTAL_MS\n");
 }
 
-/* First time a task is woken up*/
+// When a task is first woken up, record its fork time and initial runqueue time.
 tracepoint:sched:sched_wakeup_new
 {
-	// Start time of the process
-	@stime[args.pid] = nsecs;
-	// Cumulatively how much time proc has spent on runqueue
-	@qtime[args.pid];
-	// When we first wake a task, it goes on rq for first time
-	@rqtime[args.pid] = nsecs;
+  @stime[args.pid] = nsecs;
+  @rqtime[args.pid] = nsecs;
+  // Ensure the accumulator is initialized.
+  @qtime[args.pid];
 }
 
-/* subsequent wakeups of a task (if they're on waitqueue) */
+// For subsequent wakeups, update the runqueue entry time.
 tracepoint:sched:sched_wakeup
 {
-	// If we were put onto runqueue
-	@rqtime[args.pid] = nsecs;
+  @rqtime[args.pid] = nsecs;
 }
 
+// At each scheduler switch:
+//   - If the previous task was running (state == TASK_RUNNING), record its new runqueue entry.
+//   - For the incoming task, accumulate the runqueue waiting time.
 tracepoint:sched:sched_switch
 {
-	// when kicked off CPU, if we get sent to runqueue instead of waitqueue (ex. preemption)
-	// otherwise sched_wakeup above will handle if we get sent to waitqueue
-	// (and later woken up to be added back to runqueue)
-	if (args.prev_state == TASK_RUNNING) {
-		@rqtime[args.prev_pid] = nsecs;
-	}
-	// This increments the total time spent on the runqueue with the amount of time this process
-	// was just on runqueue (now that its on CPU its off runqueue)
-	@qtime[args.next_pid] += (nsecs - @rqtime[args.next_pid]);
+  if (args.prev_state == TASK_RUNNING) {
+    @rqtime[args.prev_pid] = nsecs;
+  }
+  @qtime[args.next_pid] += (nsecs - @rqtime[args.next_pid]);
 }
 
+// On process exit, calculate and print the times.
 tracepoint:sched:sched_process_exit
 {
-	// TODO sometimes this value is less than 1 ms (10^6 nanoseconds), so we need to round it
-	// instead of truncating
-	$rq_ms = @qtime[args.pid] / 1000000;
-	$total_ms = (nsecs - @stime[args.pid]) / 1000000;
-	//$total_ms = (nsecs - @stime[args.pid]);
-	// Only look at procs which started after script started
-	if (@stime[args.pid] != 0) {
-		printf("%s,%d,%d,%d\n", args.comm, args.pid, $rq_ms, $total_ms);
-		// In bpftrace language we can compare strings directly
-		// We use the below to compute the fibonacci tasklist avg completion times
-		// if (args.comm == "fibonacci") {
-		// 	printf("%s,%d,%d,%d\n", args.comm, args.pid, $rq_ms, $total_ms);
-		// }
-	}
+  // Total time (from fork until exit) in milliseconds.
+  $total_ms = (nsecs - @stime[args.pid]) / 1000000;
+  // Runqueue waiting time (accumulated) in milliseconds.
+  $rq_ms = @qtime[args.pid] / 1000000;
+
+  if (@stime[args.pid] != 0) {
+    printf("%s,%d,%d,%d\n", args.comm, args.pid, $rq_ms, $total_ms);
+    // Clean up the per-PID data to avoid stale entries.
+    delete(@stime[args.pid]);
+    delete(@rqtime[args.pid]);
+    delete(@qtime[args.pid]);
+  }
 }
-/* need to record time of task completion */
 
 END
 {
-	clear(@stime);
-	clear(@qtime);
-	clear(@rqtime);
+  // Clean up global maps on exit.
+  clear(@stime);
+  clear(@rqtime);
+  clear(@qtime);
 }
