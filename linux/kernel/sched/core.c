@@ -4797,10 +4797,9 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 	else if (rt_prio(p->prio))
 		p->sched_class = &rt_sched_class;
 	/* since freezer only has valid prio of 0, we have to check policy == SCHED_FREEZER */
-	else if (freezer_policy(p->policy)) {
-		trace_printk("sched_fork() freezer\n");
+	else if (freezer_policy(p->policy))
 		p->sched_class = &freezer_sched_class;
-	} else
+	else
 		p->sched_class = &fair_sched_class;
 
 	init_entity_runnable_average(&p->se);
@@ -6022,36 +6021,6 @@ __pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 	const struct sched_class *class;
 	struct task_struct *p;
 
-	/*
-	 * Optimization: we know that if all tasks are in the fair class we can
-	 * call that function directly, but only if the @prev task wasn't of a
-	 * higher scheduling class, because otherwise those lose the
-	 * opportunity to pull in more work from other CPUs.
-	 */
-	// Make sure freezer scheduler actually runs
-	// if (likely(!sched_class_above(prev->sched_class, &fair_sched_class) &&
-	// 	   rq->nr_running == rq->cfs.h_nr_running)) {
-
-	// 	p = pick_next_task_fair(rq, prev, rf);
-	// 	if (unlikely(p == RETRY_TASK))
-	// 		goto restart;
-
-	// 	/* Assume the next prioritized class is idle_sched_class */
-	// 	if (!p) {
-	// 		put_prev_task(rq, prev);
-	// 		p = pick_next_task_idle(rq);
-	// 	}
-
-	// 	/*
-	// 	 * This is the fast path; it cannot be a DL server pick;
-	// 	 * therefore even if @p == @prev, ->dl_server must be NULL.
-	// 	 */
-	// 	if (p->dl_server)
-	// 		p->dl_server = NULL;
-
-	// 	return p;
-	// }
-
 //restart:
 	put_prev_task_balance(rq, prev, rf);
 
@@ -7080,10 +7049,9 @@ static void __setscheduler_prio(struct task_struct *p, int prio)
 		p->sched_class = &dl_sched_class;
 	else if (rt_prio(prio))
 		p->sched_class = &rt_sched_class;
-	else if (freezer_policy(p->policy)) {
-		trace_printk("__setscheduler_prio() -> freezer_sched_class");
+	else if (freezer_policy(p->policy))
 		p->sched_class = &freezer_sched_class;
-	} else
+	else
 		p->sched_class = &fair_sched_class;
 
 	p->prio = prio;
@@ -7703,7 +7671,6 @@ static int __sched_setscheduler(struct task_struct *p,
 				const struct sched_attr *attr,
 				bool user, bool pi)
 {
-	trace_printk("__sched_setscheduler()\n");
 	int oldpolicy = -1, policy = attr->sched_policy;
 	int retval, oldprio, newprio, queued, running;
 	const struct sched_class *prev_class;

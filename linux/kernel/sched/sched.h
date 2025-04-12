@@ -194,7 +194,7 @@ static inline int dl_policy(int policy)
 static inline bool valid_policy(int policy)
 {
 	return idle_policy(policy) || fair_policy(policy) ||
-		freezer_policy(policy) || 
+		freezer_policy(policy) ||
 		rt_policy(policy) || dl_policy(policy);
 }
 
@@ -766,42 +766,25 @@ static inline bool rt_rq_is_runnable(struct rt_rq *rt_rq)
 /* Freezer class' related field in a runqueue: */
 struct freezer_rq {
 	struct list_head	active;
-	/* number of freezer tasks on this runqueue currently running on the CPU 
-	(is always either 0 or 1) */
-	//unsigned int		freezer_nr_running;
+	/* number of freezer tasks on this runqueue currently running on the CPU
+	 * (is always either 0 or 1)
+	 */
 	int			freezer_rq_len;
 #if defined CONFIG_SMP /* no group sched for freezer */
-// 	struct {
-// 		int		curr; /* highest queued freezer task prio */
-// #ifdef CONFIG_SMP
-// 		int		next; /* next highest */
-// #endif
-// 	} highest_prio;
 #endif
 #ifdef CONFIG_SMP
 	/* tasks we can send to other CPUs */
-	//struct plist_head	pushable_tasks;
 
 #endif /* CONFIG_SMP */
-
-	//int			freezer_throttled;
-	//u64			freezer_time;
-	//u64			freezer_runtime;
-	/* Nests inside the rq lock: */
 	raw_spinlock_t		freezer_runtime_lock;
 };
-
-// static inline bool freezer_rq_is_runnable(struct freezer_rq *freezer_rq)
-// {
-// 	return freezer_rq->freezer_queued && freezer_rq->freezer_nr_running;
-// }
 
 /* Deadline class' related fields in a runqueue */
 struct dl_rq {
 	/* runqueue is an rbtree, ordered by deadline */
-	struct rb_root_cached	root;
+	struct rb_root_cached root;
 
-	unsigned int		dl_nr_running;
+	unsigned int dl_nr_running;
 
 #ifdef CONFIG_SMP
 	/*

@@ -8,7 +8,7 @@
 
 // static inline int freezer_task(struct task_struct *p)
 // {
-// 	return freezer_policy(p->policy);
+//	return freezer_policy(p->policy);
 // }
 
 /*

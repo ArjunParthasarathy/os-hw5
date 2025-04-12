@@ -31,7 +31,7 @@ Part 5
 
 | Scheduler | Task Set 1 (1 CPU) | Task Set 2 (1 CPU) | Task Set 1 (4 CPU) | Task Set 2 (4 CPU) |
 |-----------|--------------------|--------------------|--------------------|--------------------|
-| CFS       |     2310 ms        |     2332 ms        |    475.838 ms      |    291.354 ms      |
+| CFS       |     2310 ms        |     2332 ms        |    444 ms      |    291.354 ms      |
 | FIFO      |     1527 ms        |     2016 ms        |    146.570 ms      |    167.937 ms      |
 | Freezer   |     1918 ms        |     1623 ms        |    161.613 ms      |    212.832 ms      |
 
@@ -49,3 +49,5 @@ To ensure a fair comparison, I disabled load balancing for the FIFO scheduler by
 
 ```bash
 taskset -c 0,1,2,3 ./fibonacci $n 1
+
+##

@@ -24,21 +24,21 @@
  */
 
 /*
- * p->rt_priority   p->prio   newpri   cpupri
- *
- *				  -1       -1 (CPUPRI_INVALID)
- *
- *				  99        0 (CPUPRI_NORMAL)
- *
- *		1        98       98       1
- *	      
- *	       49        50       50       49
- *	       50        49       49       50
- *	      
- *	       99         0        0       99       
- *
- *				 100	  100 (CPUPRI_HIGHER)
- */
+* p->rt_priority   p->prio   newpri   cpupri
+*
+*				  -1       -1 (CPUPRI_INVALID)
+*
+*				  99        0 (CPUPRI_NORMAL)
+*
+*		1        98       98       1
+*	      
+*	       49        50       50       49
+*	       50        49       49       50
+*	      
+*	       99         0        0       99       
+*
+*				 100	  100 (CPUPRI_HIGHER)
+*/
 static int convert_prio(int prio)
 {
 	int cpupri;

@@ -8,8 +8,8 @@
 
 /*
  * Priority of a process goes from 0..MAX_PRIO-1, valid RT
- * priority is 0..MAX_RT_PRIO-1, 
- * SCHED_NORMAL/SCHED_BATCH tasks are in the range MAX_RT_PRIO..MAX_PRIO-1. 
+ * priority is 0..MAX_RT_PRIO-1,
+ * SCHED_NORMAL/SCHED_BATCH tasks are in the range MAX_RT_PRIO..MAX_PRIO-1.
  * Priority values are inverted: lower p->prio value means higher priority.
  */
 

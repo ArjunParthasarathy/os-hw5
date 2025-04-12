@@ -93,8 +93,8 @@ struct task_struct init_task __aligned(L1_CACHE_BYTES) = {
 		.run_list	= LIST_HEAD_INIT(init_task.rt.run_list),
 		.time_slice	= RR_TIMESLICE,
 	},
-	/* even though we don't initialize DL here, since RT is initialized we 
-	figured we do the same thing for freezer */
+	/* even though we don't initialize DL here, since RT is initialized we
+	 * figured we do the same thing for freezer */
 	.freezer	= {
 		.run_list	= LIST_HEAD_INIT(init_task.freezer.run_list),
 		.time_slice	= FREEZER_TIMESLICE,
