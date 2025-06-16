@@ -1,3 +1,6 @@
+## This project implements a round-robin scheduler for the Linux Kernel, under a new scheduling policy called `Freezer`.
+
+
 Arjun Parthasarathy, Kshitig Seth, Veer Prasad
 avp2145, ks4184, vsp2117
 
